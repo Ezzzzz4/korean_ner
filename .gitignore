@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# PyTorch
+*.pt
+*.pth
+!weights/best_model.pt
+
+# Data
+*.csv
+*.json
+!assets/metrics.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+wandb/
+
+# Temp
+tmp/
+temp/
+for_removal/
+for_sending/
+
+#weights
+weights/
+
+#ablation
+ablation/checkpoints/
+ablation/ablation_status.json
+ablation/results/
+ablation/log.txt

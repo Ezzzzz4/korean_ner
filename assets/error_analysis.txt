@@ -1,0 +1,10 @@
+Korean NER Error Analysis Report
+============================================================
+
+Error Type Distribution:
+  boundary_error      :  2674 ( 58.2%)
+  spurious_entity     :   888 ( 19.3%)
+  missed_entity       :   680 ( 14.8%)
+  type_confusion      :   350 (  7.6%)
+
+Total Errors: 4592

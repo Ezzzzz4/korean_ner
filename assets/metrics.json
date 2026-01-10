@@ -1,0 +1,45 @@
+{
+  "overall": {
+    "f1": 0.859,
+    "precision": 0.8639,
+    "recall": 0.8541
+  },
+  "per_entity": {
+    "DT": {
+      "f1": 0.881,
+      "precision": 0.8767,
+      "recall": 0.8854,
+      "support": 2312
+    },
+    "LC": {
+      "f1": 0.7417,
+      "precision": 0.742,
+      "recall": 0.7415,
+      "support": 1648
+    },
+    "OG": {
+      "f1": 0.778,
+      "precision": 0.7724,
+      "recall": 0.7837,
+      "support": 2182
+    },
+    "PS": {
+      "f1": 0.883,
+      "precision": 0.9083,
+      "recall": 0.859,
+      "support": 4418
+    },
+    "QT": {
+      "f1": 0.918,
+      "precision": 0.9159,
+      "recall": 0.92,
+      "support": 3150
+    },
+    "TI": {
+      "f1": 0.9145,
+      "precision": 0.9063,
+      "recall": 0.9229,
+      "support": 545
+    }
+  }
+}

@@ -1,0 +1,35 @@
+======================================================================
+EXAMPLE PREDICTIONS
+======================================================================
+
+--- CORRECT PREDICTIONS ---
+
+Tokens: 경 찰 은 또 성 매 매 알 선 자 금 을 관 리 한 박 씨 의 딸 ( 3 2 ) 과 성 매 매 여 성 김 모 ( 3 3 ) 씨 등 1 6 명 을 같 은 혐 의 로 불 구 속 입
+True:   B-OG I-OG O O O O O O O O O O O O O B-PS O O O O B-QT I-QT O O O O O O O B-PS O O B-QT I-QT O O O B-QT I-QT I-QT O O O O O O O O O O
+Pred:   B-OG I-OG O O O O O O O O O O O O O B-PS O O O O B-QT I-QT O O O O O O O B-PS O O B-QT I-QT O O O B-QT I-QT I-QT O O O O O O O O O O
+
+Tokens: B 씨 는 사 법 시 험 합 격 증 이 위 조 된 것 인 지 알 수 없 었 고 , 아 들 이 좋 은 대 학 에 들 어 갈 수 있 기 만 을 바 라 던 터 라 A 씨 를 더 의 심
+True:   B-PS O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O B-PS O O O O O
+Pred:   B-PS O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O B-PS O O O O O
+
+Tokens: 수 학 A 형 의 1 등 급 커 트 라 인 은 평 균 9 6 점 , 수 학 B 형 은 9 9 점 이 었 다 .
+True:   O O O O O B-QT I-QT I-QT O O O O O O O B-QT I-QT I-QT O O O O O O B-QT I-QT I-QT O O O O
+Pred:   O O O O O B-QT I-QT I-QT O O O O O O O B-QT I-QT I-QT O O O O O O B-QT I-QT I-QT O O O O
+
+
+--- PREDICTIONS WITH ERRORS ---
+
+Tokens: ' 변 호 인 ' 은 5 공 화 국 시 절 부 산 지 역 에 서 벌 어 진 최 대 공 안 사 건 인 ' 부 림 사 건 ' 을 모 티 브 로 다 룬 영 화 로 , 지 난 1 9 일
+True:   O O O O O O B-DT I-DT I-DT I-DT I-DT I-DT B-LC I-LC O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O O B-DT I-DT I-DT I-DT I-DT
+Pred:   O O O O O O B-LC I-LC I-LC I-LC O O B-LC I-LC O O O O O O O O O O O O O O O B-LC I-LC O O O O O O O O O O O O O O O O B-DT I-DT I-DT
+Diff:                           ^^^ ^^^ ^^^ ^^^ ^^^ ^^^                                                                     ^^^ ^^^                                                         ^^^ ^^^ ^^^        
+
+Tokens: 1 8 번 홀 ( 파 5 ) 에 서 열 린 연 장 첫 번 째 홀 에 서 파 를 지 킨 최 운 정 은 보 기 에 그 친 장 하 나 를 따 돌 리 고 L P G A 투 어 첫 우 승
+True:   B-QT I-QT I-QT I-QT O B-QT I-QT O O O O O O O B-QT I-QT I-QT O O O O O O O B-PS I-PS I-PS O O O O O O B-PS I-PS I-PS O O O O O B-OG I-OG I-OG I-OG O O O O O
+Pred:   B-QT I-QT I-QT O O O B-QT O O O O O O O B-QT I-QT I-QT O O O O O O O B-PS I-PS I-PS O O O O O O O B-QT I-QT O O O O O B-OG I-OG I-OG I-OG O O O O O
+Diff:               ^^^     ^^^ ^^^                                                                                                         ^^^ ^^^ ^^^                                                        
+
+Tokens: 현 재 시 네 마 테 크 에 서 하 고 있 는 영 화 . . 놓 치 면 후 회 합 니 다 .
+True:   O O B-LC I-LC I-LC I-LC I-LC O O O O O O O O O O O O O O O O O O O
+Pred:   O O B-OG I-OG I-OG I-OG I-OG O O O O O O O O O O O O O O O O O O O
+Diff:           ^^^ ^^^ ^^^ ^^^ ^^^                                                                            
