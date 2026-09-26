@@ -1,0 +1,64 @@
+{
+  "split": "validation",
+  "checkpoint": "runs/corrected_seed42/averaged_e1_e2_e3.pt",
+  "max_length": 192,
+  "sample_count": 5000,
+  "primary_metric": "klue_official_entity_macro_f1",
+  "metric_definitions": {
+    "entity_macro_f1_strict_iob2": "All-character entity macro F1 from seqeval strict IOB2 after BIO repair of CRF predictions; includes spaces.",
+    "entity_micro_f1_strict_iob2": "All-character entity micro F1 from seqeval strict IOB2 after BIO repair of CRF predictions; includes spaces.",
+    "klue_official_entity_macro_f1": "Official KLUE baseline-compatible entity macro F1: raw CRF labels before BIO repair, literal ASCII spaces removed, predicted CLS/SEP labels kept against gold O, all examples flattened into one strict IOB2 seqeval sequence.",
+    "character_confusion": "One BIO tag per original KLUE character, including spaces."
+  },
+  "overall": {
+    "entity_macro_f1_strict_iob2": 0.8538721942660462,
+    "entity_micro_f1_strict_iob2": 0.8616314624116964,
+    "klue_official_entity_macro_f1": 0.8545979452446913,
+    "klue_official_entity_macro_f1_percent": 85.45979452446913,
+    "entity_micro_precision_strict_iob2": 0.8634826711749789,
+    "entity_micro_recall_strict_iob2": 0.8597881742302027,
+    "support": 14257,
+    "macro_precision": 0.8516863904606721,
+    "macro_recall": 0.8562891579551811,
+    "weighted_f1": 0.8618725252297098
+  },
+  "per_entity": {
+    "DT": {
+      "precision": 0.8699956952216961,
+      "recall": 0.8741349480968859,
+      "f1-score": 0.8720604099244876,
+      "support": 2312
+    },
+    "LC": {
+      "precision": 0.7326266195524146,
+      "recall": 0.7543966040024257,
+      "f1-score": 0.7433522557514193,
+      "support": 1649
+    },
+    "OG": {
+      "precision": 0.7839335180055401,
+      "recall": 0.7781851512373968,
+      "f1-score": 0.7810487580496779,
+      "support": 2182
+    },
+    "PS": {
+      "precision": 0.9085380116959064,
+      "recall": 0.8791308284291535,
+      "f1-score": 0.8935925457264466,
+      "support": 4418
+    },
+    "QT": {
+      "precision": 0.9160883280757098,
+      "recall": 0.9216121866074262,
+      "f1-score": 0.9188419553868058,
+      "support": 3151
+    },
+    "TI": {
+      "precision": 0.898936170212766,
+      "recall": 0.9302752293577982,
+      "f1-score": 0.9143372407574392,
+      "support": 545
+    }
+  },
+  "artifact_note": "Snapshot of a completed local evaluation; checkpoint path normalized for portability. Weights are not distributed in Git."
+}

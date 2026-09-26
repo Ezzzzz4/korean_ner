@@ -1,400 +1,495 @@
-"""
-Comprehensive Evaluation Script for Korean NER Model
-Generates all metrics, visualizations, and analysis for portfolio presentation.
+"""Evaluate the Korean NER model on original KLUE character sequences."""
 
-Run from project root: python evaluate/evaluate.py
-"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any, Iterable, Sequence
 
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, AutoModel
-from datasets import load_dataset
-from torchcrf import CRF
-from seqeval.metrics import classification_report, f1_score, precision_score, recall_score
-from seqeval.scheme import IOB2
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 import seaborn as sns
-from collections import defaultdict
-import json
-import os
-from pathlib import Path
+from datasets import load_dataset
+from torch.utils.data import DataLoader
 from tqdm import tqdm
+from transformers import AutoTokenizer
 
-# ============================================================================
-# Configuration
-# ============================================================================
-# Get the script's directory and project root
-SCRIPT_DIR = Path(__file__).parent.resolve()
+SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-MODEL_PATH = PROJECT_ROOT / "weights" / "best_model.pt"
-OUTPUT_DIR = SCRIPT_DIR  # Save outputs in evaluate folder
-BATCH_SIZE = 32
-MAX_LENGTH = 128
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-# Set style for plots
-plt.style.use('seaborn-v0_8-whitegrid')
-plt.rcParams['figure.dpi'] = 150
-plt.rcParams['savefig.dpi'] = 150
-plt.rcParams['font.size'] = 10
-
-# ============================================================================
-# Model Definition (must match training)
-# ============================================================================
-class KoElectraNER(nn.Module):
-    def __init__(self, model_name, num_labels, num_samples=5):
-        super().__init__()
-        self.num_labels = num_labels
-        self.num_samples = num_samples
-        
-        self.electra = AutoModel.from_pretrained(model_name)
-        hidden = self.electra.config.hidden_size
-        
-        self.lstm = nn.LSTM(hidden, 256, num_layers=1, batch_first=True, bidirectional=True)
-        self.dropout = nn.Dropout(0.1)
-        self.classifier = nn.Linear(512, num_labels)
-        self.crf = CRF(num_labels, batch_first=True)
-        
-        nn.init.xavier_uniform_(self.classifier.weight)
-        nn.init.zeros_(self.classifier.bias)
-    
-    def forward(self, input_ids, attention_mask, labels=None):
-        enc = self.electra(input_ids=input_ids, attention_mask=attention_mask)
-        seq_out = enc.last_hidden_state
-        lstm_out, _ = self.lstm(seq_out)
-        emissions = self.classifier(self.dropout(lstm_out))
-        mask = attention_mask.bool()
-        
-        if labels is not None:
-            labels_crf = labels.clone()
-            labels_crf[labels_crf == -100] = 0
-            loss = -self.crf(emissions, labels_crf, mask=mask, reduction='mean')
-            return loss, emissions
-        return self.crf.decode(emissions, mask=mask)
+from korean_ner import (
+    DEFAULT_MAX_LENGTH,
+    align_text,
+    build_label_maps,
+    labels_from_klue_dataset,
+    load_model_state,
+    score_strict_iob2,
+    token_predictions_to_char_labels,
+)
+from korean_ner.decode import token_predictions_to_raw_char_labels
+from korean_ner.metrics import score_klue_benchmark_entity_macro_f1
 
 
-# ============================================================================
-# Main Evaluation
-# ============================================================================
-def main():
-    print("=" * 60)
-    print("KOREAN NER MODEL EVALUATION")
-    print("=" * 60)
-    print(f"Model path: {MODEL_PATH}")
-    print(f"Output dir: {OUTPUT_DIR}")
-    print(f"Device: {DEVICE}")
+DEFAULT_MODEL_NAME = "monologg/koelectra-base-v3-discriminator"
+DEFAULT_CHECKPOINT = PROJECT_ROOT / "weights" / "best_model.pt"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "runs" / "evaluation"
+DEFAULT_BATCH_SIZE = 32
 
-    print("\n[1/6] Loading dataset and tokenizer...")
-    dataset = load_dataset("klue", "ner")
-    tokenizer = AutoTokenizer.from_pretrained("monologg/koelectra-base-v3-discriminator")
 
-    label_list = dataset['train'].features['ner_tags'].feature.names
-    label_to_id = {l: i for i, l in enumerate(label_list)}
-    id_to_label = {i: l for i, l in enumerate(label_list)}
-    NUM_LABELS = len(label_list)
+plt.style.use("seaborn-v0_8-whitegrid")
+plt.rcParams["figure.dpi"] = 150
+plt.rcParams["savefig.dpi"] = 150
+plt.rcParams["font.size"] = 10
 
-    entity_types = sorted(set(l.split('-')[1] for l in label_list if l != 'O'))
-    print(f"   Labels: {label_list}")
-    print(f"   Entity types: {entity_types}")
 
-    def tokenize_and_align(examples):
-        tokenized = tokenizer(
-            examples['tokens'], truncation=True, is_split_into_words=True,
-            max_length=MAX_LENGTH, padding='max_length'
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
+    parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME)
+    parser.add_argument("--split", default="validation")
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--device", default="cpu", help="Torch device. Defaults to CPU and never auto-selects CUDA.")
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("--max-length", type=int, default=DEFAULT_MAX_LENGTH)
+    parser.add_argument("--limit", type=int, default=None, help="Optional small-sample smoke limit.")
+    return parser.parse_args()
+
+
+def klue_text(example: dict[str, Any]) -> str:
+    """Return the original KLUE character sequence, preserving spaces."""
+
+    tokens = example["tokens"]
+    if isinstance(tokens, str):
+        return tokens
+    return "".join(tokens)
+
+
+def label_names_from_ids(label_ids: Iterable[int], id_to_label: dict[int, str]) -> list[str]:
+    return [id_to_label[int(label_id)] for label_id in label_ids]
+
+
+def build_eval_records(
+    examples: Sequence[dict[str, Any]],
+    tokenizer: Any,
+    label_to_id: dict[str, int],
+    id_to_label: dict[int, str],
+    *,
+    max_length: int = DEFAULT_MAX_LENGTH,
+) -> list[dict[str, Any]]:
+    """Tokenize KLUE examples without dropping spaces or silently truncating."""
+
+    records: list[dict[str, Any]] = []
+    for example in examples:
+        text = klue_text(example)
+        label_ids = [int(label_id) for label_id in example["ner_tags"]]
+        encoding = align_text(
+            text,
+            tokenizer,
+            label_ids,
+            max_length=max_length,
+            label_to_id=label_to_id,
+            id_to_label=id_to_label,
         )
-        labels = []
-        for idx, tags in enumerate(examples['ner_tags']):
-            word_ids = tokenized.word_ids(batch_index=idx)
-            prev_word = None
-            label_ids = []
-            for word_idx in word_ids:
-                if word_idx is None:
-                    label_ids.append(-100)
-                elif word_idx != prev_word:
-                    label_ids.append(tags[word_idx])
-                else:
-                    orig = tags[word_idx]
-                    name = id_to_label[orig]
-                    if name.startswith('B-'):
-                        i_name = name.replace('B-', 'I-')
-                        label_ids.append(label_to_id.get(i_name, orig))
-                    else:
-                        label_ids.append(orig)
-                prev_word = word_idx
-            labels.append(label_ids)
-        tokenized['labels'] = labels
-        return tokenized
+        records.append(
+            {
+                "input_ids": torch.tensor(encoding.input_ids, dtype=torch.long),
+                "attention_mask": torch.tensor(encoding.attention_mask, dtype=torch.long),
+                "labels": torch.tensor(encoding.labels or [], dtype=torch.long),
+                "char_indices": encoding.char_indices,
+                "text": text,
+                "true_char_labels": label_names_from_ids(label_ids, id_to_label),
+                "tokens": encoding.tokens,
+            }
+        )
+    return records
 
-    tokenized = dataset.map(tokenize_and_align, batched=True)
-    tokenized = tokenized.remove_columns(dataset['train'].column_names)
-    tokenized.set_format('torch')
 
-    val_loader = DataLoader(tokenized['validation'], batch_size=BATCH_SIZE)
-    print(f"   Validation samples: {len(tokenized['validation'])}")
-
-    # Load Model
-    print("\n[2/6] Loading model...")
-    model = KoElectraNER("monologg/koelectra-base-v3-discriminator", NUM_LABELS, num_samples=5)
-
-    checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
-    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    else:
-        model.load_state_dict(checkpoint)
-
-    model.to(DEVICE)
-    model.eval()
-
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"   Total parameters: {total_params:,}")
-
-    # Run Predictions
-    print("\n[3/6] Running predictions...")
-    all_preds = []
-    all_labels = []
-    all_tokens = []
-    raw_predictions = []
-
-    with torch.no_grad():
-        for batch in tqdm(val_loader, desc="Evaluating"):
-            input_ids = batch['input_ids'].to(DEVICE)
-            attention_mask = batch['attention_mask'].to(DEVICE)
-            batch_labels = batch['labels']
-            
-            preds = model(input_ids, attention_mask)
-            
-            for i, (p, l, m) in enumerate(zip(preds, batch_labels.numpy(), attention_mask.cpu().numpy())):
-                length = int(m.sum())
-                tokens = tokenizer.convert_ids_to_tokens(input_ids[i].cpu().numpy()[:length])
-                
-                pred_tags = []
-                true_tags = []
-                sample_tokens = []
-                
-                for j, (pred_id, label_id) in enumerate(zip(p[:length], l[:length])):
-                    if label_id != -100:
-                        pred_tags.append(label_list[pred_id])
-                        true_tags.append(label_list[int(label_id)])
-                        sample_tokens.append(tokens[j] if j < len(tokens) else '[UNK]')
-                        raw_predictions.append((label_list[int(label_id)], label_list[pred_id]))
-                
-                all_preds.append(pred_tags)
-                all_labels.append(true_tags)
-                all_tokens.append(sample_tokens)
-
-    # Calculate Metrics
-    print("\n[4/6] Calculating metrics...")
-    overall_f1 = f1_score(all_labels, all_preds, mode='strict', scheme=IOB2)
-    overall_precision = precision_score(all_labels, all_preds, mode='strict', scheme=IOB2)
-    overall_recall = recall_score(all_labels, all_preds, mode='strict', scheme=IOB2)
-
-    report_str = classification_report(all_labels, all_preds, mode='strict', scheme=IOB2, digits=4)
-    report_dict = classification_report(all_labels, all_preds, mode='strict', scheme=IOB2, digits=4, output_dict=True)
-
-    print(f"\n   Overall F1: {overall_f1:.4f}")
-    print(f"   Precision:  {overall_precision:.4f}")
-    print(f"   Recall:     {overall_recall:.4f}")
-
-    # Save classification report
-    with open(OUTPUT_DIR / "classification_report.txt", 'w', encoding='utf-8') as f:
-        f.write("=" * 60 + "\n")
-        f.write("KLUE NER EVALUATION RESULTS\n")
-        f.write("=" * 60 + "\n\n")
-        f.write(f"Model: KoELECTRA-base-v3 + BiLSTM + CRF\n")
-        f.write(f"Validation samples: {len(tokenized['validation'])}\n\n")
-        f.write("-" * 60 + "\n")
-        f.write("ENTITY-LEVEL METRICS (Strict Evaluation)\n")
-        f.write("-" * 60 + "\n\n")
-        f.write(report_str)
-        f.write("\n" + "-" * 60 + "\n")
-        f.write(f"Overall Entity F1: {overall_f1:.4f}\n")
-        f.write(f"KLUE Paper Baseline (KoELECTRA-base): 0.8611\n")
-        f.write("-" * 60 + "\n")
-
-    # Save metrics as JSON
-    metrics = {
-        "overall": {
-            "f1": float(round(overall_f1, 4)),
-            "precision": float(round(overall_precision, 4)),
-            "recall": float(round(overall_recall, 4))
-        },
-        "per_entity": {}
+def collate_eval_batch(batch: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "input_ids": torch.stack([item["input_ids"] for item in batch]),
+        "attention_mask": torch.stack([item["attention_mask"] for item in batch]),
+        "labels": torch.stack([item["labels"] for item in batch]),
+        "char_indices": [item["char_indices"] for item in batch],
+        "texts": [item["text"] for item in batch],
+        "true_char_labels": [item["true_char_labels"] for item in batch],
+        "tokens": [item["tokens"] for item in batch],
     }
 
-    for entity in entity_types:
-        if entity in report_dict:
-            metrics["per_entity"][entity] = {
-                "f1": float(round(report_dict[entity]['f1-score'], 4)),
-                "precision": float(round(report_dict[entity]['precision'], 4)),
-                "recall": float(round(report_dict[entity]['recall'], 4)),
-                "support": int(report_dict[entity]['support'])
-            }
 
-    with open(OUTPUT_DIR / "metrics.json", 'w') as f:
-        json.dump(metrics, f, indent=2)
+def normalized_rows(matrix: np.ndarray) -> np.ndarray:
+    """Normalize rows while keeping all-zero rows at zero."""
 
-    # Generate Visualizations
-    print("\n[5/6] Generating visualizations...")
+    matrix = matrix.astype(float, copy=False)
+    row_sums = matrix.sum(axis=1, keepdims=True)
+    return np.divide(matrix, row_sums, out=np.zeros_like(matrix, dtype=float), where=row_sums != 0)
 
-    # 1. Per-Entity F1 Bar Chart
+
+def confusion_matrix_from_pairs(pairs: Iterable[tuple[str, str]], labels: Sequence[str]) -> np.ndarray:
+    label_to_index = {label: index for index, label in enumerate(labels)}
+    matrix = np.zeros((len(labels), len(labels)), dtype=float)
+    for true_label, pred_label in pairs:
+        matrix[label_to_index[true_label], label_to_index[pred_label]] += 1
+    return matrix
+
+
+def entity_type(label: str) -> str:
+    return label.split("-", 1)[1] if "-" in label else label
+
+
+def run_model_predictions(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    id_to_label: dict[int, str],
+    *,
+    device: torch.device,
+) -> tuple[list[list[str]], list[list[str]], list[list[str]], list[str], list[tuple[str, str]], list[str], list[str]]:
+    all_true: list[list[str]] = []
+    all_pred: list[list[str]] = []
+    all_tokens: list[list[str]] = []
+    texts: list[str] = []
+    char_pairs: list[tuple[str, str]] = []
+    benchmark_true: list[str] = []
+    benchmark_pred: list[str] = []
+
+    model.eval()
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="Evaluating"):
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            predictions = model(input_ids, attention_mask)
+
+            for pred_ids, char_indices, text, true_labels, tokens, attention_mask_row in zip(
+                predictions,
+                batch["char_indices"],
+                batch["texts"],
+                batch["true_char_labels"],
+                batch["tokens"],
+                batch["attention_mask"].tolist(),
+            ):
+                active_length = int(sum(attention_mask_row))
+                if active_length < 2:
+                    raise ValueError("encoded prediction must include CLS and SEP tokens")
+                active_pred_ids = list(pred_ids[:active_length])
+                raw_pred_labels = token_predictions_to_raw_char_labels(
+                    active_pred_ids,
+                    char_indices[:active_length],
+                    id_to_label,
+                    text_length=len(text),
+                )
+                pred_labels = token_predictions_to_char_labels(
+                    active_pred_ids,
+                    char_indices[:active_length],
+                    id_to_label,
+                    text_length=len(text),
+                )
+                all_true.append(true_labels)
+                all_pred.append(pred_labels)
+                all_tokens.append(tokens)
+                texts.append(text)
+                char_pairs.extend(zip(true_labels, pred_labels))
+                benchmark_true.append("O")
+                benchmark_pred.append(id_to_label[int(active_pred_ids[0])])
+                for char, true_label, raw_pred_label in zip(text, true_labels, raw_pred_labels):
+                    if char == " ":
+                        continue
+                    benchmark_true.append(true_label)
+                    benchmark_pred.append(raw_pred_label)
+                benchmark_true.append("O")
+                benchmark_pred.append(id_to_label[int(active_pred_ids[-1])])
+
+    return all_true, all_pred, all_tokens, texts, char_pairs, benchmark_true, benchmark_pred
+
+
+def metrics_payload(
+    *,
+    split: str,
+    checkpoint: Path,
+    max_length: int,
+    sample_count: int,
+    scores: Any,
+    klue_benchmark_entity_macro_f1: float,
+) -> dict[str, Any]:
+    micro_report = scores.report.get("micro avg", {})
+    macro_report = scores.report.get("macro avg", {})
+    weighted_report = scores.report.get("weighted avg", {})
+    per_entity = {
+        label: values
+        for label, values in scores.report.items()
+        if label not in {"micro avg", "macro avg", "weighted avg"}
+    }
+    return {
+        "split": split,
+        "checkpoint": str(checkpoint),
+        "max_length": max_length,
+        "sample_count": sample_count,
+        "primary_metric": "klue_official_entity_macro_f1",
+        "metric_definitions": {
+            "entity_macro_f1_strict_iob2": "All-character entity macro F1 from seqeval strict IOB2 after BIO repair of CRF predictions; includes spaces.",
+            "entity_micro_f1_strict_iob2": "All-character entity micro F1 from seqeval strict IOB2 after BIO repair of CRF predictions; includes spaces.",
+            "klue_official_entity_macro_f1": (
+                "Official KLUE baseline-compatible entity macro F1: raw CRF labels before BIO repair, "
+                "literal ASCII spaces removed, predicted CLS/SEP labels kept against gold O, "
+                "all examples flattened into one strict IOB2 seqeval sequence."
+            ),
+            "character_confusion": "One BIO tag per original KLUE character, including spaces.",
+        },
+        "overall": {
+            "entity_macro_f1_strict_iob2": float(scores.f1_macro),
+            "entity_micro_f1_strict_iob2": float(scores.f1_micro),
+            "klue_official_entity_macro_f1": float(klue_benchmark_entity_macro_f1),
+            "klue_official_entity_macro_f1_percent": float(klue_benchmark_entity_macro_f1 * 100.0),
+            "entity_micro_precision_strict_iob2": float(scores.precision_micro),
+            "entity_micro_recall_strict_iob2": float(scores.recall_micro),
+            "support": int(micro_report.get("support", 0)),
+            "macro_precision": float(macro_report.get("precision", 0.0)),
+            "macro_recall": float(macro_report.get("recall", 0.0)),
+            "weighted_f1": float(weighted_report.get("f1-score", 0.0)),
+        },
+        "per_entity": per_entity,
+    }
+
+
+def write_classification_report(output_dir: Path, metrics: dict[str, Any], report: dict[str, Any]) -> None:
+    lines = [
+        "=" * 72,
+        "KLUE NER EVALUATION RESULTS",
+        "=" * 72,
+        "",
+        f"Split: {metrics['split']}",
+        f"Checkpoint: {metrics['checkpoint']}",
+        f"Samples: {metrics['sample_count']}",
+        "",
+        "PRIMARY METRIC (KLUE BASELINE-COMPATIBLE)",
+        f"KLUE official-compatible entity macro F1: {metrics['overall']['klue_official_entity_macro_f1']:.6f}",
+        f"KLUE official-compatible entity macro F1 (%): {metrics['overall']['klue_official_entity_macro_f1_percent']:.4f}",
+        "",
+        "SECONDARY METRICS (ALL CHARACTERS, INCLUDING SPACES)",
+        f"Entity macro F1, strict IOB2: {metrics['overall']['entity_macro_f1_strict_iob2']:.6f}",
+        "",
+        f"Entity micro F1, strict IOB2: {metrics['overall']['entity_micro_f1_strict_iob2']:.6f}",
+        "",
+        "PER-ENTITY REPORT",
+        json.dumps(report, ensure_ascii=False, indent=2),
+    ]
+    (output_dir / "classification_report.txt").write_text("\n".join(lines), encoding="utf-8")
+
+
+def save_metrics(output_dir: Path, metrics: dict[str, Any]) -> None:
+    (output_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def plot_per_entity_report(output_dir: Path, report: dict[str, Any], entity_types: Sequence[str], macro_f1: float, split: str) -> None:
+    entities = [entity for entity in entity_types if entity in report]
+    precisions = [report[entity]["precision"] for entity in entities]
+    recalls = [report[entity]["recall"] for entity in entities]
+    f1_scores = [report[entity]["f1-score"] for entity in entities]
+
     fig, ax = plt.subplots(figsize=(10, 6))
-    entities = []
-    f1_scores = []
-    precisions = []
-    recalls = []
-
-    for entity in entity_types:
-        if entity in report_dict:
-            entities.append(entity)
-            f1_scores.append(report_dict[entity]['f1-score'])
-            precisions.append(report_dict[entity]['precision'])
-            recalls.append(report_dict[entity]['recall'])
-
     x = np.arange(len(entities))
     width = 0.25
-
-    bars1 = ax.bar(x - width, precisions, width, label='Precision', color='#3498db', alpha=0.8)
-    bars2 = ax.bar(x, recalls, width, label='Recall', color='#2ecc71', alpha=0.8)
-    bars3 = ax.bar(x + width, f1_scores, width, label='F1-Score', color='#e74c3c', alpha=0.8)
-
-    ax.set_xlabel('Entity Type', fontsize=12)
-    ax.set_ylabel('Score', fontsize=12)
-    ax.set_title('Named Entity Recognition Performance by Entity Type', fontsize=14, fontweight='bold')
+    bars1 = ax.bar(x - width, precisions, width, label="Precision", color="#3498db", alpha=0.85)
+    bars2 = ax.bar(x, recalls, width, label="Recall", color="#2ecc71", alpha=0.85)
+    bars3 = ax.bar(x + width, f1_scores, width, label="F1", color="#e74c3c", alpha=0.85)
+    ax.set_xlabel("Entity Type", fontsize=12)
+    ax.set_ylabel("Score", fontsize=12)
+    ax.set_title(f"{split} All-Character Entity F1 by Type (BIO-Repaired Predictions)", fontsize=14, fontweight="bold")
     ax.set_xticks(x)
     ax.set_xticklabels(entities, fontsize=11)
-    ax.legend(loc='lower right', fontsize=10)
     ax.set_ylim(0, 1.0)
-    ax.axhline(y=overall_f1, color='#9b59b6', linestyle='--', linewidth=2)
+    ax.axhline(y=macro_f1, color="#9b59b6", linestyle="--", linewidth=2,
+               label=f"All-character macro F1 ({macro_f1:.3f})")
+    ax.legend(loc="lower right", fontsize=10)
 
     for bars in [bars1, bars2, bars3]:
         for bar in bars:
             height = bar.get_height()
-            ax.annotate(f'{height:.2f}',
-                        xy=(bar.get_x() + bar.get_width() / 2, height),
-                        xytext=(0, 3), textcoords="offset points",
-                        ha='center', va='bottom', fontsize=8)
-
+            ax.annotate(
+                f"{height:.2f}",
+                xy=(bar.get_x() + bar.get_width() / 2, height),
+                xytext=(0, 3),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
     plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "per_entity_f1.png", bbox_inches='tight', facecolor='white')
+    plt.savefig(output_dir / "per_entity_f1.png", bbox_inches="tight", facecolor="white")
     plt.close()
-    print(f"   Saved: per_entity_f1.png")
 
-    # 2. Confusion Matrix
-    print("   Generating confusion matrix...")
-    confusion = defaultdict(lambda: defaultdict(int))
-    for true, pred in raw_predictions:
-        confusion[true][pred] += 1
 
-    matrix = np.zeros((len(label_list), len(label_list)))
-    for i, true_label in enumerate(label_list):
-        for j, pred_label in enumerate(label_list):
-            matrix[i, j] = confusion[true_label][pred_label]
-
-    row_sums = matrix.sum(axis=1, keepdims=True)
-    matrix_normalized = np.divide(matrix, row_sums, where=row_sums!=0)
-
+def plot_confusion_matrices(
+    output_dir: Path,
+    *,
+    char_pairs: Sequence[tuple[str, str]],
+    label_names: Sequence[str],
+    entity_types: Sequence[str],
+    split: str,
+) -> None:
+    label_matrix = normalized_rows(confusion_matrix_from_pairs(char_pairs, label_names))
     fig, ax = plt.subplots(figsize=(12, 10))
-    sns.heatmap(matrix_normalized, annot=True, fmt='.2f', cmap='Blues',
-                xticklabels=label_list, yticklabels=label_list, ax=ax,
-                cbar_kws={'label': 'Proportion'})
-    ax.set_xlabel('Predicted Label', fontsize=12)
-    ax.set_ylabel('True Label', fontsize=12)
-    ax.set_title('Token-Level Confusion Matrix (Normalized)', fontsize=14, fontweight='bold')
-    plt.xticks(rotation=45, ha='right')
+    sns.heatmap(
+        label_matrix,
+        annot=True,
+        fmt=".2f",
+        cmap="Blues",
+        xticklabels=label_names,
+        yticklabels=label_names,
+        ax=ax,
+        cbar_kws={"label": "Proportion of True Character Labels"},
+    )
+    ax.set_xlabel("Predicted BIO Label", fontsize=12)
+    ax.set_ylabel("True BIO Label", fontsize=12)
+    ax.set_title(f"{split} Character-Level BIO Label Confusion Matrix", fontsize=14, fontweight="bold")
+    plt.xticks(rotation=45, ha="right")
     plt.yticks(rotation=0)
     plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "confusion_matrix.png", bbox_inches='tight', facecolor='white')
+    plt.savefig(output_dir / "confusion_matrix.png", bbox_inches="tight", facecolor="white")
     plt.close()
-    print(f"   Saved: confusion_matrix.png")
 
-    # 3. Entity-only confusion matrix
-    entity_confusion = defaultdict(lambda: defaultdict(int))
-    for true, pred in raw_predictions:
-        true_entity = true.split('-')[1] if '-' in true else true
-        pred_entity = pred.split('-')[1] if '-' in pred else pred
-        entity_confusion[true_entity][pred_entity] += 1
-
-    entity_labels = ['O'] + entity_types
-    entity_matrix = np.zeros((len(entity_labels), len(entity_labels)))
-    for i, true_label in enumerate(entity_labels):
-        for j, pred_label in enumerate(entity_labels):
-            entity_matrix[i, j] = entity_confusion[true_label][pred_label]
-
-    row_sums = entity_matrix.sum(axis=1, keepdims=True)
-    entity_matrix_norm = np.divide(entity_matrix, row_sums, where=row_sums!=0)
-
+    entity_labels = ["O", *entity_types]
+    entity_pairs = [(entity_type(true), entity_type(pred)) for true, pred in char_pairs]
+    entity_matrix = normalized_rows(confusion_matrix_from_pairs(entity_pairs, entity_labels))
     fig, ax = plt.subplots(figsize=(8, 6))
-    sns.heatmap(entity_matrix_norm, annot=True, fmt='.2f', cmap='RdYlGn_r',
-                xticklabels=entity_labels, yticklabels=entity_labels, ax=ax,
-                cbar_kws={'label': 'Proportion'}, vmin=0, vmax=1)
-    ax.set_xlabel('Predicted Entity', fontsize=12)
-    ax.set_ylabel('True Entity', fontsize=12)
-    ax.set_title('Entity-Type Confusion Matrix', fontsize=14, fontweight='bold')
+    sns.heatmap(
+        entity_matrix,
+        annot=True,
+        fmt=".2f",
+        cmap="RdYlGn_r",
+        xticklabels=entity_labels,
+        yticklabels=entity_labels,
+        ax=ax,
+        cbar_kws={"label": "Proportion of True Character Types"},
+        vmin=0,
+        vmax=1,
+    )
+    ax.set_xlabel("Predicted Entity Type", fontsize=12)
+    ax.set_ylabel("True Entity Type", fontsize=12)
+    ax.set_title(f"{split} Character-Level Entity-Type Confusion Matrix", fontsize=14, fontweight="bold")
     plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "entity_confusion_matrix.png", bbox_inches='tight', facecolor='white')
+    plt.savefig(output_dir / "entity_confusion_matrix.png", bbox_inches="tight", facecolor="white")
     plt.close()
-    print(f"   Saved: entity_confusion_matrix.png")
 
-    # Example Predictions
-    print("\n[6/6] Generating example predictions...")
-    examples_output = []
-    examples_output.append("=" * 70)
-    examples_output.append("EXAMPLE PREDICTIONS")
-    examples_output.append("=" * 70 + "\n")
 
-    correct_examples = []
-    error_examples = []
+def write_examples(
+    output_dir: Path,
+    texts: Sequence[str],
+    predictions: Sequence[Sequence[str]],
+    labels: Sequence[Sequence[str]],
+    *,
+    max_examples: int = 3,
+) -> None:
+    correct: list[tuple[str, Sequence[str], Sequence[str]]] = []
+    errors: list[tuple[str, Sequence[str], Sequence[str]]] = []
+    for text, pred, gold in zip(texts, predictions, labels):
+        has_entity = any(label != "O" for label in gold)
+        if not has_entity:
+            continue
+        if list(pred) == list(gold) and len(correct) < max_examples:
+            correct.append((text, pred, gold))
+        elif list(pred) != list(gold) and len(errors) < max_examples:
+            errors.append((text, pred, gold))
 
-    for i, (tokens, preds, labels) in enumerate(zip(all_tokens, all_preds, all_labels)):
-        has_entity = any(l != 'O' for l in labels)
-        is_correct = preds == labels
-        
-        if has_entity:
-            if is_correct and len(correct_examples) < 3:
-                correct_examples.append((tokens, preds, labels))
-            elif not is_correct and len(error_examples) < 3:
-                error_examples.append((tokens, preds, labels))
+    lines = ["=" * 70, "CHARACTER-LEVEL EXAMPLE PREDICTIONS", "=" * 70, ""]
+    for title, examples in [("CORRECT PREDICTIONS", correct), ("PREDICTIONS WITH ERRORS", errors)]:
+        lines.extend([f"--- {title} ---", ""])
+        for text, pred, gold in examples:
+            chars = list(text)
+            limit = min(80, len(chars))
+            lines.append(f"Text:   {text[:80]}")
+            lines.append(f"Chars:  {' '.join(chars[:limit])}")
+            lines.append(f"True:   {' '.join(gold[:limit])}")
+            lines.append(f"Pred:   {' '.join(pred[:limit])}")
+            if title.endswith("ERRORS"):
+                diff = ["^^^" if pred_label != true_label else "..." for pred_label, true_label in zip(pred[:limit], gold[:limit])]
+                lines.append(f"Diff:   {' '.join(diff)}")
+            lines.append("")
+    (output_dir / "example_predictions.txt").write_text("\n".join(lines), encoding="utf-8")
 
-    examples_output.append("--- CORRECT PREDICTIONS ---\n")
-    for tokens, preds, labels in correct_examples:
-        examples_output.append(f"Tokens: {' '.join(tokens[:50])}")
-        examples_output.append(f"True:   {' '.join(labels[:50])}")
-        examples_output.append(f"Pred:   {' '.join(preds[:50])}")
-        examples_output.append("")
 
-    examples_output.append("\n--- PREDICTIONS WITH ERRORS ---\n")
-    for tokens, preds, labels in error_examples:
-        examples_output.append(f"Tokens: {' '.join(tokens[:50])}")
-        examples_output.append(f"True:   {' '.join(labels[:50])}")
-        examples_output.append(f"Pred:   {' '.join(preds[:50])}")
-        diffs = ['^^^' if p != l else '   ' for p, l in zip(preds[:50], labels[:50])]
-        examples_output.append(f"Diff:   {' '.join(diffs)}")
-        examples_output.append("")
+def evaluate(args: argparse.Namespace) -> dict[str, Any]:
+    output_dir = args.output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    device = torch.device(args.device)
 
-    with open(OUTPUT_DIR / "example_predictions.txt", 'w', encoding='utf-8') as f:
-        f.write('\n'.join(examples_output))
-    print(f"   Saved: example_predictions.txt")
+    dataset = load_dataset("klue", "ner")
+    if args.split not in dataset:
+        raise ValueError(f"unknown split {args.split!r}; available splits: {', '.join(dataset.keys())}")
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+    label_maps = build_label_maps(labels_from_klue_dataset(dataset))
+    entity_types = sorted({label.split("-", 1)[1] for label in label_maps.names if label != "O"})
 
-    # Summary
-    print("\n" + "=" * 60)
-    print("EVALUATION COMPLETE")
-    print("=" * 60)
-    print(f"\nResults saved to: {OUTPUT_DIR}/")
-    print(f"  - classification_report.txt")
-    print(f"  - metrics.json")
-    print(f"  - per_entity_f1.png")
-    print(f"  - confusion_matrix.png")
-    print(f"  - entity_confusion_matrix.png")
-    print(f"  - example_predictions.txt")
-    print(f"\n{'='*60}")
-    print(f"FINAL SCORE: F1 = {overall_f1:.4f}")
-    print(f"KLUE Baseline: F1 = 0.8611")
-    print(f"{'='*60}")
+    split_dataset = dataset[args.split]
+    if args.limit is not None:
+        split_dataset = split_dataset.select(range(min(args.limit, len(split_dataset))))
+    records = build_eval_records(
+        list(split_dataset),
+        tokenizer,
+        dict(label_maps.label_to_id),
+        dict(label_maps.id_to_label),
+        max_length=args.max_length,
+    )
+    loader = DataLoader(records, batch_size=args.batch_size, collate_fn=collate_eval_batch)
+
+    from korean_ner import KoElectraNER
+
+    model = KoElectraNER(
+        args.model_name,
+        len(label_maps.names),
+        o_label_id=label_maps.label_to_id["O"],
+        num_samples=5,
+    )
+    load_model_state(model, args.checkpoint, map_location=device)
+    model.to(device)
+
+    true_labels, pred_labels, _tokens, texts, char_pairs, benchmark_true, benchmark_pred = run_model_predictions(
+        model,
+        loader,
+        dict(label_maps.id_to_label),
+        device=device,
+    )
+    scores = score_strict_iob2(true_labels, pred_labels)
+    benchmark_f1 = score_klue_benchmark_entity_macro_f1(benchmark_true, benchmark_pred)
+    metrics = metrics_payload(
+        split=args.split,
+        checkpoint=args.checkpoint,
+        max_length=args.max_length,
+        sample_count=len(records),
+        scores=scores,
+        klue_benchmark_entity_macro_f1=benchmark_f1,
+    )
+    save_metrics(output_dir, metrics)
+    write_classification_report(output_dir, metrics, scores.report)
+    plot_per_entity_report(output_dir, scores.report, entity_types, scores.f1_macro, args.split)
+    plot_confusion_matrices(
+        output_dir,
+        char_pairs=char_pairs,
+        label_names=label_maps.names,
+        entity_types=entity_types,
+        split=args.split,
+    )
+    write_examples(output_dir, texts, pred_labels, true_labels)
+    return metrics
+
+
+def main() -> None:
+    args = parse_args()
+    print("=" * 72)
+    print("KOREAN NER VALIDATION: KLUE-COMPATIBLE AND ALL-CHARACTER METRICS")
+    print("=" * 72)
+    print(f"Split: {args.split}")
+    print(f"Checkpoint: {args.checkpoint}")
+    print(f"Output dir: {args.output_dir}")
+    print(f"Device: {args.device}")
+    metrics = evaluate(args)
+    print(f"Primary KLUE-compatible entity macro F1: {metrics['overall']['klue_official_entity_macro_f1']:.6f}")
+    print(f"All-character entity macro F1: {metrics['overall']['entity_macro_f1_strict_iob2']:.6f}")
+    print(f"All-character entity micro F1: {metrics['overall']['entity_micro_f1_strict_iob2']:.6f}")
+    print(f"Saved outputs to: {args.output_dir}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,13 @@
+{
+  "checkpoint": "runs/kf_deberta_best.pt",
+  "dataset": "klue/ner",
+  "split": "train",
+  "examples": 5000,
+  "sample_seed": 42,
+  "saved_epoch": 1,
+  "train_klue_official_entity_macro_f1": 0.9518335753388336,
+  "train_klue_official_entity_macro_f1_percent": 95.18335753388337,
+  "train_flat_label_count": 224815,
+  "checkpoint_sha256": "8293b8a3fca1feb57952da9b6df8bd52cea893b067e8488f291b72db1aeb4a62",
+  "artifact_note": "Snapshot of a completed local evaluation; checkpoint path normalized for portability. Weights are not distributed in Git."
+}

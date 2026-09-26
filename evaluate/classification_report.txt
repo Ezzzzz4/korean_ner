@@ -1,9 +1,12 @@
 ============================================================
-KLUE NER EVALUATION RESULTS
+HISTORICAL KLUE NER VALIDATION (SPACES EXCLUDED)
 ============================================================
 
 Model: KoELECTRA-base-v3 + BiLSTM + CRF
 Validation samples: 5000
+This archived run excluded spaces from scoring, as the official KLUE baseline
+does. It did not document this convention and did not score predicted CLS/SEP
+labels. Its validation metrics must not be compared directly with test scores.
 
 ------------------------------------------------------------
 ENTITY-LEVEL METRICS (Strict Evaluation)
@@ -23,6 +26,6 @@ ENTITY-LEVEL METRICS (Strict Evaluation)
 weighted avg     0.8647    0.8541    0.8592     14255
 
 ------------------------------------------------------------
-Overall Entity F1: 0.8590
-KLUE Paper Baseline (KoELECTRA-base): 0.8611
+Historical validation entity micro F1: 0.8590
+Historical validation entity macro F1: 0.8527
 ------------------------------------------------------------

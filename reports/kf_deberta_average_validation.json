@@ -1,0 +1,12 @@
+{
+  "checkpoint": "korean_ner_deberta_e5_e6_avg.pt",
+  "dataset": "klue/ner",
+  "split": "validation",
+  "examples": 5000,
+  "sample_seed": null,
+  "saved_epoch": null,
+  "validation_klue_official_entity_macro_f1": 0.866225035390307,
+  "validation_klue_official_entity_macro_f1_percent": 86.6225035390307,
+  "validation_flat_label_count": 235480,
+  "artifact_note": "Snapshot of a completed local evaluation; checkpoint path normalized for portability. Weights are not distributed in Git."
+}

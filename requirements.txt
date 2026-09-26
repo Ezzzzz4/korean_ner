@@ -1,11 +1,13 @@
 # Korean NER - Requirements
 # Python 3.11+
-# Pinned versions for reproducibility
+# On an RTX 50-series GPU, install the CUDA 13.0 PyTorch wheel as described
+# in README.md before installing this file. The same version can run on CPU.
 
 # Core ML
-torch==2.1.0
+torch==2.12.1
 transformers==4.35.0
 datasets==2.14.6
+pyarrow==12.0.1
 
 # NER-specific
 pytorch-crf==0.7.2  # Provides torchcrf.CRF for structured prediction
@@ -20,7 +22,7 @@ seaborn==0.13.0
 numpy==1.26.0
 
 # HuggingFace Hub (for downloading weights)
-huggingface_hub==0.19.4
+huggingface_hub==0.17.3
 
 # Progress bars
 tqdm==4.66.1

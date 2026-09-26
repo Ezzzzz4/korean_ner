@@ -1,0 +1,13 @@
+{
+  "checkpoint": "runs/kf_deberta_best.pt",
+  "dataset": "klue/ner",
+  "split": "validation",
+  "examples": 5000,
+  "sample_seed": null,
+  "saved_epoch": 1,
+  "validation_klue_official_entity_macro_f1": 0.867357745347855,
+  "validation_klue_official_entity_macro_f1_percent": 86.7357745347855,
+  "validation_flat_label_count": 235480,
+  "checkpoint_sha256": "8293b8a3fca1feb57952da9b6df8bd52cea893b067e8488f291b72db1aeb4a62",
+  "artifact_note": "Snapshot of a completed local evaluation; checkpoint path normalized for portability. Weights are not distributed in Git."
+}

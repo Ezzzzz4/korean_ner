@@ -1,0 +1,60 @@
+{
+  "dataset": "klue/ner",
+  "train_examples": 21008,
+  "validation_examples": 5000,
+  "hardware": "NVIDIA RTX 5090 Laptop GPU",
+  "stages": [
+    {
+      "stage": "initial",
+      "config": {
+        "model_name": "kakaobank/kf-deberta-base",
+        "model_revision": "363b171d71443b0874b0bf9cea053eb5b1650633",
+        "pretrained_bin": null,
+        "output_dir": "runs/kf_deberta_seed42",
+        "resume_checkpoint": null,
+        "device": "cuda",
+        "seed": 42,
+        "max_length": 128,
+        "train_batch_size": 16,
+        "eval_batch_size": 32,
+        "train_limit": null,
+        "eval_limit": null,
+        "epochs": 5,
+        "lr": 3e-05,
+        "weight_decay": 0.01,
+        "warmup_ratio": 0.1,
+        "gradient_clip": 1.0,
+        "early_stopping_patience": 2,
+        "num_workers": 0,
+        "bf16": true
+      }
+    },
+    {
+      "stage": "continuation",
+      "config": {
+        "model_name": "kakaobank/kf-deberta-base",
+        "model_revision": "363b171d71443b0874b0bf9cea053eb5b1650633",
+        "pretrained_bin": null,
+        "output_dir": "runs/kf_deberta_extra_epoch",
+        "resume_checkpoint": null,
+        "init_checkpoint": "runs/kf_deberta_epoch5.pt",
+        "device": "cuda",
+        "seed": 42,
+        "max_length": 128,
+        "train_batch_size": 16,
+        "eval_batch_size": 32,
+        "train_limit": null,
+        "eval_limit": null,
+        "epochs": 1,
+        "lr": 5e-06,
+        "weight_decay": 0.01,
+        "warmup_ratio": 0.0,
+        "gradient_clip": 1.0,
+        "early_stopping_patience": 1,
+        "num_workers": 0,
+        "bf16": true
+      }
+    }
+  ],
+  "note": "Paths normalized; continuation starts from the epoch-5 weights, with a fresh optimizer and schedule."
+}

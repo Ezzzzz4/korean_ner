@@ -1,0 +1,49 @@
+{
+  "dataset": "klue/ner",
+  "metric": "KLUE-compatible strict IOB2 entity macro F1; ASCII spaces excluded, character predictions reconstructed",
+  "validation_examples": 5000,
+  "training_sample_examples": 5000,
+  "training_sample_seed": 42,
+  "training_seed": 42,
+  "validation_results": [
+    {
+      "model": "KoELECTRA · averaged epochs 1–3",
+      "f1_percent": 85.45979452446913
+    },
+    {
+      "model": "KF-DeBERTa · epoch 5",
+      "f1_percent": 86.49592905885598
+    },
+    {
+      "model": "KF-DeBERTa · averaged stages",
+      "f1_percent": 86.6225035390307
+    },
+    {
+      "model": "KF-DeBERTa · extra epoch",
+      "f1_percent": 86.7357745347855
+    }
+  ],
+  "train_validation_comparison": [
+    {
+      "stage": "Epoch 5",
+      "train_f1_percent": 94.81879586165788,
+      "validation_f1_percent": 86.49592905885598,
+      "gap_pp": 8.322866802801897
+    },
+    {
+      "stage": "Extra epoch",
+      "train_f1_percent": 95.18335753388337,
+      "validation_f1_percent": 86.7357745347855,
+      "gap_pp": 8.447582999097861
+    }
+  ],
+  "extra_epoch_validation_gain_pp": 0.23984547592952765,
+  "selected_checkpoint": "runs/kf_deberta_best.pt",
+  "selected_checkpoint_sha256": "8293b8a3fca1feb57952da9b6df8bd52cea893b067e8488f291b72db1aeb4a62",
+  "limitations": [
+    "Checkpoint selection, continuation and averaging use the same validation split.",
+    "Training scores use already seen data; the gap is consistent with overfitting but does not prove memorization.",
+    "One training seed; no confidence interval or hidden-test evaluation.",
+    "Encoder and head differ from KoELECTRA; no causal component-gain claim."
+  ]
+}

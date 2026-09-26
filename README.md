@@ -1,28 +1,28 @@
-# Korean Named Entity Recognition with KoELECTRA
+# Korean Named Entity Recognition with KoELECTRA & KF-DeBERTa
 
-> **Approaching KLUE baseline performance through architectural engineering: understanding what makes Korean NER work.**
+> **Understanding what makes Korean NER work: from architectural engineering and tokenization debugging to 86.74% validation entity macro F1.**
 
 ---
 
 ## Quick Start
 
-```bash
-# Clone repository
-git clone https://github.com/yourusername/korean_ner.git
+```powershell
+# Windows: clone repository and activate the new environment
+git clone https://github.com/Ezzzzz4/korean_ner.git
 cd korean_ner
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 
-# Install dependencies
-pip install -r requirements.txt
-
-# Download model weights from HuggingFace
-pip install huggingface_hub
-huggingface-cli download mrleast/koelectra_ner --local-dir weights/
-
-# Run the demo
-python app.py
+# Download the selected checkpoint; weights are kept outside Git
+huggingface-cli download mrleast/kf-deberta-klue-ner best_model.pt --local-dir runs/ --local-dir-use-symlinks False
+Move-Item runs/best_model.pt runs/kf_deberta_best.pt
+python app_deberta.py
 ```
 
-Navigate to `http://localhost:7860` to use the interactive NER demo.
+Navigate to `http://localhost:7861` to test the selected KF-DeBERTa model. The original KoELECTRA demo remains available through `python app.py` on port 7860.
+
+**Fresh clone?** The fine-tuned weights are published separately and are not included in Git. Follow [Model Weights](#model-weights) for the download or [Training](#training) to reproduce a checkpoint. Both demos default to CPU; CUDA is selected explicitly.
 
 ---
 
@@ -36,10 +36,11 @@ Named Entity Recognition extracts structured information from text—identifying
 Korean grammatical particles attach directly to noun stems, blurring entity boundaries:
 - **"서울에서"** (in Seoul) = **"서울"** (Seoul entity) + **"에서"** (locative particle)
 
-Unlike English where whitespace typically delimits entities ("in Seoul"), Korean requires morpheme-aware segmentation. The model must learn to identify entity spans despite particles that attach without word boundaries.
+Unlike English where whitespace typically delimits entities ("in Seoul"), Korean entity boundaries often occur inside whitespace-separated words. The model must learn to identify entity spans despite particles that attach without word boundaries.
 
-**2. Character-Level Tokenization**  
-The KLUE benchmark uses character-level annotation where each character—including spaces—is a token:
+**2. Character-Level Annotation**
+
+The KLUE source data uses character-level annotation, including spaces. Encoder tokens still depend on the model tokenizer:
 ```
 Input:  "김민수 교수는"
 Tokens: ['김', '민', '수', ' ', '교', '수', '는']
@@ -65,60 +66,75 @@ This project investigates **what architectural and training choices enable compe
 2. **Regularization**: What is the contribution of modern techniques (R-Drop, adversarial training) to Korean NER?
 3. **Engineering**: Can systematic debugging and preprocessing validation achieve near-baseline results despite hardware constraints?
 
-**Performance Target**: The KLUE baseline (KoELECTRA-base) achieves **86.11% F1**. This implementation reaches **85.90% F1** (99.8% of baseline) using:
-- **Architecture**: KoELECTRA-base + BiLSTM + CRF
-- **Training**: FGM adversarial training + R-Drop regularization + mixed precision
-- **Hardware**: NVIDIA RTX 3050 (4GB VRAM)
+**Performance Target**: The KLUE paper reports **86.11% entity macro F1 on hidden test** for KoELECTRA-base. The selected KF-DeBERTa checkpoint reaches **86.74% on public validation** after reloading the saved weights and evaluating all 5,000 examples. This exceeds the paper's number numerically; the different splits prevent a claim of hidden-test superiority.
 
-**Next Steps**: An ablation study framework is implemented to systematically quantify each technique's contribution. Running this study will provide empirical answers about how much each component (BiLSTM, CRF, FGM, R-Drop) contributes to the final performance.
+- **Original architecture**: KoELECTRA-base + BiLSTM + CRF
+- **Selected model**: KF-DeBERTa-base + token-classification head
+- **Evaluation**: Character reconstruction and KLUE-compatible strict IOB2 entity macro F1
+- **Evidence**: [Saved reports and checkpoint hashes](reports/README.md), with a detailed [audit in Russian](AUDIT_RU.md)
+
+**Next Steps**: Repeat across seeds and obtain an untouched test evaluation. The regularization ablation framework is available, but separate gains from BiLSTM, CRF, FGM, or R-Drop have not been established.
 
 ---
 
 ## Repository Structure
 
-```
+```text
 korean_ner/
-├── app.py                    # Gradio web demo with NER inference and attention visualization
-├── train_model.ipynb         # Complete training notebook with all SOTA techniques
-├── requirements.txt          # Python dependencies
+├── app.py                    # KoELECTRA demo: highlighting and attention
+├── app_deberta.py            # KF-DeBERTa demo: entity spans and offsets
+├── train.py                  # Corrected KoELECTRA + BiLSTM + CRF training
+├── train_deberta.py          # KF-DeBERTa training and continuation
+├── evaluate_deberta.py       # Reload checkpoint and evaluate a data split
+├── predict_deberta.py        # Entity extraction as JSON
+├── average_deberta.py        # Compatible checkpoint weight averaging
+├── train_model.ipynb         # Runbook for the maintained training scripts
+├── requirements.txt          # Pinned Python dependencies
 ├── LICENSE                   # MIT License
 ├── README.md                 # This file
+├── AUDIT_RU.md               # Findings, corrections, and result limitations
 │
-├── weights/                  # Model weights (download from HuggingFace)
-│   └── best_model.pt         # Final trained KoELECTRA-BiLSTM-CRF model
+├── korean_ner/               # Shared labels, alignment, decoding, and metrics
+├── tests/                    # CPU regression tests
+├── reports/                  # Portable evaluation snapshots and run settings
+├── runs/                     # Local experiments and weights (ignored by Git)
+├── weights/                  # Historical downloaded checkpoint (ignored)
 │
-├── evaluate/                 # Evaluation and analysis tools
-│   ├── evaluate.py           # Core evaluation metrics and confusion matrices
-│   ├── error_analysis.py     # Error categorization (boundary, spurious, missed, type)
-│   ├── attention_viz.py      # Transformer attention pattern visualization
-│   ├── benchmark.py          # GPU/CPU inference speed benchmarking
-│   └── calibration.py        # Confidence calibration analysis (ECE, reliability)
+├── evaluate/
+│   ├── evaluate.py           # KoELECTRA metrics and confusion matrices
+│   ├── error_analysis.py     # One-to-one pairing of entity errors
+│   ├── attention_viz.py      # Descriptive transformer attention plots
+│   ├── benchmark.py          # Explicit CPU/GPU inference benchmarking
+│   ├── calibration.py        # Emission-classifier calibration diagnostics
+│   └── report_results.py     # Rebuild README chart from saved reports
 │
-├── ablation/                 # Ablation study for technique contribution analysis
-│   └── train.py              # Resumable training script for 6 experimental variants
-│
-└── assets/                   # Generated visualizations and metrics
-    ├── per_entity_f1.png     # Per-entity F1 score bar chart
-    ├── confusion_matrix.png  # Token-level confusion matrix
-    ├── metrics.json          # Quantitative results in JSON format
-    └── attention/            # Attention heatmaps and layer evolution plots
+├── ablation/train.py         # Four regularization variants, same architecture
+└── assets/                   # Current figures and labeled historical artifacts
 ```
 
 ---
 
 ## Model Weights
 
-Model weights are hosted on HuggingFace Hub and must be downloaded before running inference:
+The selected model and rollback checkpoint are stored locally:
+
+| Checkpoint | Model | Validation entity macro F1 |
+|------------|-------|---------------------------|
+| `runs/kf_deberta_best.pt` | KF-DeBERTa, one extra epoch at 5e-6 | **86.74%** |
+| `runs/kf_deberta_epoch5.pt` | KF-DeBERTa, epoch 5 | 86.50% |
+| `runs/corrected_seed42/averaged_e1_e2_e3.pt` | Corrected KoELECTRA, averaged epochs 1–3 | 85.46% |
+
+Each KF-DeBERTa checkpoint is approximately 707 MiB. These files are excluded from Git; their SHA-256 hashes are recorded in [reports](reports/README.md). After a fresh clone, download the selected fine-tuned checkpoint or run the [training procedure](#training). The public [KF-DeBERTa-base encoder](https://huggingface.co/kakaobank/kf-deberta-base) is pretrained, so downloading it alone does not reproduce the NER result.
+
+The selected weights are published at [mrleast/kf-deberta-klue-ner](https://huggingface.co/mrleast/kf-deberta-klue-ner). `best_model.pt` is the checkpoint used by this repository; `model.safetensors`, `config.json`, and tokenizer files support standard Transformers loading. The epoch-5 rollback checkpoint remains local.
+
+The **historical KoELECTRA weights** remain available on [Hugging Face](https://huggingface.co/mrleast/koelectra_ner):
 
 ```bash
-# Install HuggingFace CLI (if not already installed)
-pip install huggingface_hub
-
-# Download weights to the weights/ directory
-huggingface-cli download mrleast/koelectra_ner --local-dir weights/
+huggingface-cli download mrleast/koelectra_ner best_model.pt --local-dir weights/
 ```
 
-Alternatively, download manually from: https://huggingface.co/mrleast/koelectra_ner
+These historical weights used a different space representation. They can be inspected with the current evaluator, but that run is a distribution-shift diagnostic and does not reproduce their original score.
 
 ---
 
@@ -126,25 +142,17 @@ Alternatively, download manually from: https://huggingface.co/mrleast/koelectra_
 
 ### Architecture Selection
 
-The choice of **KoELECTRA-base-v3** as the encoder was motivated by three factors:
+The original model uses **KoELECTRA-base-v3**, a Korean pretrained encoder, with BiLSTM and CRF layers for sequence labeling. This provides a concrete setting for investigating alignment, contextual representations, and tag transitions.
 
-**1. Korean-Specific Pretraining**  
-Unlike multilingual models (e.g., mBERT), KoELECTRA was pretrained exclusively on Korean corpora:
-- **54GB of Korean text** from web crawls, news, and Wikipedia
-- **Morpheme-aware pretraining**: Better understanding of Korean grammatical structure
-- **Domain relevance**: Pretrained on the same distribution as KLUE benchmark data
+The follow-up experiment uses **KF-DeBERTa-base** with a token-classification head. It starts from the public encoder at revision `363b171d71443b0874b0bf9cea053eb5b1650633` and learns the NER head on KLUE training data. Subword offsets map predictions back to original characters.
 
-**2. ELECTRA's Sample Efficiency**  
-The ELECTRA pretraining objective (replaced token detection) is more sample-efficient than masked language modeling:
-- While BERT learns from ~15% of tokens (masked positions), ELECTRA learns from **100% of tokens** (detecting which tokens were replaced)
-- This yields stronger representations at equivalent compute, critical for a 110M-parameter model
+**Selected configuration**: The 86.74% KF-DeBERTa run uses a token-classification head without BiLSTM, CRF, FGM, or R-Drop. Those components belong to the separate KoELECTRA experiments described below.
 
-**3. Manageable Model Size**  
-At 110M parameters, KoELECTRA-base fits within modest compute budgets while maintaining competitive performance.
+**Why keep both?** The corrected KoELECTRA pipeline preserves the original experiment, while KF-DeBERTa provides a separately trained comparison. Changing the encoder and head together means the result cannot isolate the contribution of one architectural component.
 
 ### Why BiLSTM + CRF?
 
-The final architecture adds two components atop the transformer encoder:
+The original architecture adds two components atop the transformer encoder:
 
 **BiLSTM Layer** (256 hidden units, bidirectional)  
 Transformers capture long-range dependencies through self-attention, but LSTMs provide complementary sequential inductive biases:
@@ -159,11 +167,11 @@ Invalid prediction: [B-PER, I-LOC, I-LOC]
 Problem: I-LOC cannot follow B-PER without an intervening B-LOC
 ```
 
-The CRF models **transition scores** between tags, learning:
+The CRF models **transition scores** between tags and can learn to prefer:
 - `B-X → I-X` has high score (valid continuation)
 - `B-X → I-Y` has low score (invalid type change)
 
-During inference, Viterbi decoding finds the highest-scoring valid path through the label lattice, eliminating structurally impossible sequences.
+During inference, Viterbi decoding finds the highest-scoring path under the learned scores. This implementation does **not** impose hard BIO constraints, so invalid transitions remain possible. Benchmark scoring uses raw predictions; BIO repair is reserved for display and explicitly labeled diagnostics.
 
 ```
 Input Characters
@@ -189,16 +197,18 @@ BIO-tagged Entity Predictions
 
 ### Training Techniques
 
-To maximize performance, I employed several modern NLP techniques:
+The project explores several NLP training techniques. Their implementation and measured status are kept explicit:
 
-| Technique | Purpose | Implementation | Expected Gain |
-|-----------|---------|----------------|---------------|
-| **FGM (Fast Gradient Method)** | Adversarial perturbations on embeddings improve robustness | ε=0.5 perturbation on word embeddings | +0.5-1.0% F1 |
-| **R-Drop** | Consistency regularization via KL divergence between dropout variations | α=0.5 weight on KL term | +0.3-0.5% F1 |
-| **Multi-Sample Dropout** | Averaging predictions across 5 dropout masks | 5 forward passes with different masks | +0.2-0.4% F1 |
-| **Mixed Precision (FP16)** | Reduce memory footprint and accelerate training | PyTorch GradScaler with dynamic loss scaling | 2× memory efficiency |
-| **Differential Learning Rates** | Preserve pretrained encoder knowledge while training new layers | Encoder: 3e-5, Head: 1e-3 | Faster convergence |
-| **Gradient Clipping** | Prevent exploding gradients from CRF layer | max_norm=1.0 | Training stability |
+| Technique | Purpose | Implementation | Evidence in this project |
+|-----------|---------|----------------|--------------------------|
+| **FGM (Fast Gradient Method)** | Perturb embeddings during training | Optional `--use-fgm`, default ε=0.5 | KoELECTRA option; separate gain unmeasured |
+| **R-Drop** | Encourage agreement between dropout passes | Optional `--use-rdrop`, default α=1.0 | KoELECTRA option; separate gain unmeasured |
+| **Mixed Precision (BF16)** | Reduce GPU memory use during training | Explicit `--device cuda --bf16` | Used in the reported KF-DeBERTa run |
+| **Differential Learning Rates** | Train encoder and new layers at different rates | KoELECTRA encoder/head parameter groups | Available; selected KF-DeBERTa uses one rate |
+| **Gradient Clipping** | Limit gradient norm | max_norm=1.0 | Used in the reported run |
+| **Checkpoint Averaging** | Compare nearby model weights | Equal-weight parameter average | KF-DeBERTa average: 86.62%, below selected 86.74% |
+
+The original README's numerical gains for FGM, R-Drop, and multi-sample dropout were not supported by completed ablations. Those estimates have been removed.
 
 #### FGM: Learning Robust Representations
 
@@ -210,7 +220,7 @@ Adversarial training improves model robustness by injecting noise during trainin
 4. Backpropagate **L_adv** to update parameters
 5. Restore original embeddings
 
-This forces the model to learn representations that remain stable under small input perturbations, improving generalization.
+This encourages stability under small embedding perturbations. Whether it improves this task must be measured with matched training runs.
 
 #### R-Drop: Consistency Regularization
 
@@ -226,36 +236,29 @@ This penalizes the model when different dropout masks produce divergent predicti
 
 ## Training Configuration & Hardware
 
-### The 4GB VRAM Constraint
+### From Hardware Constraints to a Verified Run
 
-Transformer training typically requires 16-24GB VRAM for batch sizes that enable stable gradient estimates. Training on a consumer GPU (NVIDIA RTX 3050 with 4GB VRAM) imposed constraints:
+The original project emphasized training under a 4GB VRAM constraint. The newly verified experiment ran on an **NVIDIA RTX 5090 Laptop GPU** with BF16. The earlier 17-epoch / 34-hour / FP16 account does not establish the resource requirements or performance of this new run.
 
-| Parameter | Typical Setup | Constrained Setup | Trade-off |
-|-----------|--------------|-------------------|-----------|
-| **Batch Size** | 64-128 | **32** | Noisier gradients, slower convergence |
-| **Sequence Length** | 512 | **128** | Truncated long documents |
-| **Precision** | FP32 | **FP16 (mixed)** | Numerical stability concerns |
-
-Despite these limitations:
-- **Training time**: 17 epochs in ~34 hours (2 hours/epoch)
-- **Memory management**: Aggressive garbage collection after each epoch
-- **Result**: Achieved 99.8% of baseline performance
-
-This demonstrates that **systematic engineering choices can compensate for hardware constraints**—meaningful NLP research remains accessible without enterprise resources.
+All scripts default to CPU and require explicit CUDA selection. Sequence overflow raises an error instead of silently dropping text. The longest observed KF-DeBERTa inputs were 103 training tokens and 83 validation tokens, within the 128-token limit.
 
 ### Training Hyperparameters
 
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| Batch Size | 32 | Maximum fitting in 4GB VRAM |
-| Max Sequence Length | 128 | Balance coverage vs memory |
-| Encoder Learning Rate | 3e-5 | Preserve pretrained knowledge |
-| Head Learning Rate | 1e-3 | Faster learning for new layers |
-| Warmup Ratio | 10% | Stabilize early training |
-| Epochs | 17 | Until convergence (early stopping) |
-| Gradient Clipping | 1.0 | Prevent CRF gradient explosions |
-| FGM Epsilon | 0.5 | Standard adversarial strength |
-| R-Drop Alpha | 0.5 | Balance task loss + consistency |
+| Parameter | Initial Run | Extra Epoch | Rationale |
+|-----------|-------------|-------------|-----------|
+| Training examples | 21,008 | Same training split | Full KLUE training data |
+| Validation examples | 5,000 | Same validation split | Checkpoint selection |
+| Train / evaluation batch size | 16 / 32 | 16 / 32 | Dynamic padding |
+| Max sequence length | 128 | 128 | No truncation in these splits |
+| Learning rate | 3e-5 | 5e-6 | Smaller final adjustment |
+| Warmup ratio | 10% | 0% | Fresh optimizer schedule for continuation |
+| Weight decay | 0.01 | 0.01 | Same regularization setting |
+| Epochs | 5 | 1 | Stop after the extra validation comparison |
+| Gradient clipping | 1.0 | 1.0 | Bound gradient norm |
+| Precision | BF16 autocast | BF16 autocast | Reloaded evaluation uses FP32 |
+| Random seed | 42 | 42 | One seed, not a multi-seed study |
+
+**Checkpoint selection** uses KLUE-compatible validation entity macro F1. The original five-epoch checkpoint is retained for rollback. Full settings are saved in [the training manifest](reports/kf_deberta_training.json).
 
 ---
 
@@ -263,22 +266,22 @@ This demonstrates that **systematic engineering choices can compensate for hardw
 
 ### Initial Failure
 
-After 34 hours of training and achieving 85.9% validation F1, I built a Gradio demo for interactive testing. The results were catastrophic:
+The original README described a debugging problem: a reported 85.9% validation F1 did not translate into useful predictions in the Gradio demo:
 
 **Input**: "삼성전자 이재용 회장" (Samsung Electronics Chairman Lee Jae-yong)  
 **Expected**: [ORG: 삼성전자] [PER: 이재용]  
 **Actual**: Random nonsense predictions
 
-Despite strong validation metrics, the model failed completely on custom inputs.
+This was the original project narrative; the saved evaluation reports do not independently verify those particular custom-input failures.
 
 ### The Investigation
 
-I systematically traced the inference pipeline:
+My original debugging account traced the inference pipeline:
 1. ✓ **Model weights**: Loaded correctly from checkpoint
 2. ✓ **Label mapping**: IDs matched training labels
 3. ✗ **Tokenization**: Mismatch discovered
 
-The KLUE dataset uses **character-level tokenization**, not the morpheme-level tokenization I assumed:
+The KLUE dataset supplies **character-level labels**. I had assumed word-level alignment would transfer directly to inference:
 
 | My Assumption | KLUE Reality |
 |--------------|---------------|
@@ -286,17 +289,23 @@ The KLUE dataset uses **character-level tokenization**, not the morpheme-level t
 | 3 tokens | 7 tokens |
 | Labels aligned per morpheme | Labels aligned per character |
 
-When I tokenized "김민수" as a single token, the model received 1 embedding instead of 3, completely misaligning the label sequence.
+Changing how "김민수" is tokenized changes the number and positions of model tokens. Labels need an explicit mapping to those positions.
 
 ### The Fix
 
+The first debugging step was to inspect `list(text)`. A later audit showed that this alone was insufficient: a tokenizer can still drop spaces or produce multiple subpieces for one character.
+
 ```python
-def char_tokenize(text):
-    """Character-level tokenization matching KLUE format."""
-    return list(text)  # Each character becomes a token
+from korean_ner import align_text
+
+def char_tokenize(text, tokenizer):
+    """Preserve character positions in the corrected KoELECTRA pipeline."""
+    return align_text(text, tokenizer, max_length=192)
 ```
 
-This immediately fixed the demo. The model was never broken—only the preprocessing was misaligned.
+The corrected KoELECTRA alignment inserts the existing vocabulary **ID** for `[unused0]` at whitespace positions. Passing the literal string through the tokenizer would split it into several pieces. KF-DeBERTa instead tokenizes full text and retains offset mappings; the demo restores internal spaces when an entity continues across them.
+
+**The scoring detail**: KLUE annotates spaces, but the official baseline removes ordinary space labels when computing its benchmark metric. The evaluator therefore reports benchmark-compatible scores separately from all-character diagnostics. It reconstructs characters before computing strict IOB2 **macro** F1. The old 85.90% subtoken **micro** F1 measured a different quantity.
 
 ### The Label Mapping Bug
 
@@ -307,7 +316,7 @@ Training (KLUE):  [B-DT, I-DT, B-LC, I-LC, B-OG, ...]
 Inference (bug):  [O, B-PS, I-PS, B-LC, B-OG, ...]
 ```
 
-When the model predicted ID `6` (B-PS in KLUE), the inference code interpreted it as `B-OG`. Every entity was systematically misclassified.
+For example, ID `6` is `B-PS` in the KLUE mapping. A manually reordered label list can assign that ID to a different entity type, even when model weights load correctly.
 
 **Root cause**: I manually defined labels instead of loading them from the dataset's `.features` metadata.
 
@@ -319,95 +328,108 @@ When the model predicted ID `6` (B-PS in KLUE), the inference code interpreted i
 
 ### Overall Performance
 
-| Metric | This Model | KLUE Baseline | Gap |
-|--------|-----------|---------------|-----|
-| **F1** | **85.90%** | 86.11% | -0.21% |
-| Precision | 86.39% | — | — |
-| Recall | 85.41% | — | — |
+All four project rows below use the **same 5,000-example public validation split** and KLUE-compatible strict IOB2 entity macro F1. KF-DeBERTa scores were confirmed by loading the saved weights in a separate FP32 evaluation process.
 
-The model reaches **99.8%** of baseline performance through careful architectural engineering and training strategy.
+| Model | Validation Entity Macro F1 | Decision |
+|-------|---------------------------|----------|
+| Corrected KoELECTRA + BiLSTM + CRF, averaged epochs 1–3 | 85.46% | Retained original architecture |
+| KF-DeBERTa-base, epoch 5 | 86.50% | Saved rollback checkpoint |
+| KF-DeBERTa-base, average of epoch 5 and extra epoch | 86.62% | Below the selected checkpoint |
+| **KF-DeBERTa-base, extra epoch at 5e-6** | **86.74%** | **Selected model** |
+
+**Reference, not a matched test comparison**: the [official KLUE baseline](https://github.com/KLUE-benchmark/KLUE-baseline) reports 86.06% for KoELECTRA-base on validation; the [KLUE paper](https://arxiv.org/abs/2105.09680) reports 86.11% on hidden test. The historical project score, 85.90%, was subtoken micro F1. These numbers should not be pooled into one performance ranking.
+
+![Verified validation results and train-validation gap](assets/verified_results.png)
+
+**Key Findings**:
+1. **The extra epoch improved validation by 0.24 percentage points**: 86.50% → 86.74%. It used a smaller learning rate and a fresh optimizer schedule.
+2. **Weight averaging did not win this comparison**: 86.62% was retained in the report, but the extra-epoch checkpoint was selected.
+3. **The new model is numerically above 86.11%**: hidden-test superiority remains unverified. The encoder and head changed together, so no single component receives credit for the improvement.
+
+### Overfitting Check
+
+| Checkpoint | Seen Train Sample F1 | Validation F1 | Train–Validation Gap |
+|------------|----------------------|---------------|---------------------|
+| Epoch 5 | 94.82% | 86.50% | 8.32 pp |
+| Extra epoch | 95.18% | 86.74% | 8.45 pp |
+
+Both training measurements use the **same randomly selected 5,000 previously seen examples**, with sample seed 42. The gap is consistent with overfitting, but it does not by itself prove memorization or identify its cause. The extra epoch improved validation while increasing the gap by about 0.1 points; training stopped here and the earlier checkpoint was preserved.
+
+**Limitations**: Epochs, continuation, and averaging were compared on the same validation split. Re-evaluation checks the saved model and scorer; it is not an independent test. Only one training seed was run, and no statistical significance or hidden-test result is claimed.
 
 ### Per-Entity Performance
 
-| Entity | F1 | Precision | Recall | Support | Analysis |
-|--------|-----|-----------|--------|---------|----------|
-| QT (Quantity) | 91.8% | 91.6% | 92.0% | 3,150 | **Strong**: Numeric patterns are highly regular |
-| TI (Time) | 91.5% | 90.6% | 92.3% | 545 | **Strong**: Temporal expressions are formulaic |
-| PS (Person) | 88.3% | 90.8% | 85.9% | 4,418 | **High precision, lower recall**: Conservative on names |
-| DT (Date) | 88.1% | 87.7% | 88.5% | 2,312 | **Balanced**: Calendar expressions well-structured |
-| OG (Organization) | 77.8% | 77.2% | 78.4% | 2,182 | **Weak**: Confused with locations (명사-시) |
-| LC (Location) | 74.2% | 74.2% | 74.2% | 1,648 | **Weak**: Ambiguous with organizations |
+These diagnostics are for the **corrected KoELECTRA average**, using all original characters, including spaces, **after BIO repair**. They are distinct from the primary benchmark-compatible metric and do not describe the selected KF-DeBERTa model.
 
-![Per-Entity F1 Scores](assets/per_entity_f1.png)
+| Entity | F1 | Precision | Recall | Support | Observation |
+|--------|-----|-----------|--------|---------|-------------|
+| QT (Quantity) | 91.88% | 91.61% | 92.16% | 3,151 | Highest F1 in this diagnostic |
+| TI (Time) | 91.43% | 89.89% | 93.03% | 545 | Higher recall than precision |
+| PS (Person) | 89.36% | 90.85% | 87.91% | 4,418 | Higher precision than recall |
+| DT (Date) | 87.21% | 87.00% | 87.41% | 2,312 | Similar precision and recall |
+| OG (Organization) | 78.10% | 78.39% | 77.82% | 2,182 | Lower F1 than the other types above |
+| LC (Location) | 74.34% | 73.26% | 75.44% | 1,649 | Lowest F1 in this diagnostic |
 
-**Key Findings**:
-1. **Temporal/quantitative entities exceed 90% F1**: Structured patterns (dates, times, numbers) are easiest to recognize
-2. **Person entities show precision-recall gap**: The model is conservative—it misses some names (85.9% recall) but rarely false-positives (90.8% precision)
-3. **Location-Organization confusion**: Both entity types fall below the 86% overall F1 threshold, indicating systematic confusion
+![Corrected KoELECTRA per-entity F1: all characters after BIO repair](assets/corrected_koelectra_per_entity_f1.png)
 
 ### Confusion Analysis
 
-![Confusion Matrix](assets/confusion_matrix.png)
+![Corrected KoELECTRA character-label confusion matrix](assets/corrected_koelectra_confusion_matrix.png)
 
-The normalized confusion matrix reveals:
-- **Strong diagonal** (0.82-0.99): Most predictions are correct
-- **B-LC ↔ B-OG spillover** (6% each direction): Locations and organizations share naming patterns (e.g., "서울시" = Seoul City OR Seoul Metropolitan Government)
-- **I-OG → O leakage** (10%): The model struggles with organization entity boundaries, prematurely terminating multi-token organizations
-- **Clean temporal tags**: DT, TI, QT show minimal off-diagonal confusion
+The row-normalized matrix shows **character-label proportions**, not entity-level error counts. The lower LC/OG F1 values motivate inspecting their boundaries and types; the matrix alone does not establish a linguistic cause. Historical figures remain in `assets/` and are identified in [the figure index](assets/README.md).
+
+Full-precision numbers, checkpoint hashes, and metric definitions are available in [the report index](reports/README.md).
 
 ---
 
 ## Error Analysis: Understanding Failures
 
-Analysis of 5,000 validation samples identified **4,592 total errors**:
+Aggregate F1 tells us how many complete entities are recovered, but it does not show what failed. The corrected analysis pairs gold and predicted spans **one-to-one** before categorizing errors:
 
-| Error Type | Count | Percentage | Example |
-|------------|-------|------------|---------|
-| **Boundary Errors** | 2,674 | 58.2% | Predicted "5월" instead of "5월 6일" |
-| **Spurious Entities** | 888 | 19.3% | Tagged non-entity as entity |
-| **Missed Entities** | 680 | 14.8% | Failed to detect entity |
-| **Type Confusion** | 350 | 7.6% | Predicted "서울" as ORG instead of LOC |
+| Error Type | Meaning | Example |
+|------------|---------|---------|
+| **Boundary Error** | Matching type, incorrect extent | "5월" instead of "5월 6일" |
+| **Spurious Entity** | Prediction with no matched gold entity | Ordinary text tagged as an entity |
+| **Missed Entity** | Gold entity without a matched prediction | A person name omitted |
+| **Type Confusion** | Matching span, wrong entity type | Location labeled as organization |
 
-**Dominant pattern**: 58% of errors are boundary errors—the model identifies that an entity exists but misjudges its span. This is particularly common with:
-- Compound expressions: "5월 6일" (May 6th) split into "5월" and "6일"
-- Multi-word organizations: "대한민국 정부" (Government of South Korea) truncated to "대한민국"
+The old headline of **4,592 errors / 58.2% boundary errors** came from the historical matching procedure. It is not a validated error breakdown for the corrected pipeline or the new KF-DeBERTa checkpoint. A new count must come from a completed run of the corrected analyzer.
 
-#### Type Confusion Matrix
+**Location–Organization ambiguity** remains a useful investigation question. For example, "서울시" can refer to a geographic place or the metropolitan government. Context and annotation policy matter; a confusion matrix alone cannot show whether world knowledge caused an error.
 
-| True↓ Pred→ | PS | LC | OG | DT | TI | QT |
-|-------------|----|----|----|----|----|----| 
-| **PS** | — | 32 | 29 | 2 | 0 | 5 |
-| **LC** | 20 | — | **99** | 1 | 0 | 1 |
-| **OG** | 25 | **89** | — | 1 | 0 | 0 |
-| **DT** | 0 | 0 | 2 | — | 1 | 12 |
-| **TI** | 0 | 0 | 0 | 1 | — | 4 |
-| **QT** | 2 | 3 | 1 | 15 | 5 | — |
-
-**LC ↔ OG confusion dominates** (188 errors total). Korean administrative divisions use the suffix "-시" (city), creating ambiguity:
-- **Location context**: "서울시는 대한민국의 수도이다" (Seoul is the capital of South Korea)
-- **Organization context**: "서울시가 발표한 정책" (Policy announced by Seoul Metropolitan Government)
-
-Without world knowledge, surface forms are insufficient to disambiguate.
+Two other plots need equally careful interpretation:
+- **Attention heatmaps** summarize selected transformer weights. They do not establish a token's causal contribution to the final prediction.
+- **Calibration plots** in `evaluate/calibration.py` measure the emission classifier's softmax confidence and argmax correctness. They do not measure CRF sequence confidence.
 
 ---
 
 ## Interactive Demo
 
-The Gradio application provides real-time entity extraction with color-coded highlighting:
+Two Gradio applications expose the trained models:
 
-```bash
-python app.py
+| Application | Model | Output | Local Address |
+|-------------|-------|--------|---------------|
+| `python app_deberta.py` | Selected KF-DeBERTa | JSON entities with original character offsets | `http://localhost:7861` |
+| `python app.py` | Corrected KoELECTRA + BiLSTM + CRF | Color-coded entities and attention heatmaps | `http://localhost:7860` |
+
+Example checked on the selected model for "삼성전자 이재용 회장이 서울에서 회의를 열었다.":
+
+| Entity | Type | Character Span |
+|--------|------|----------------|
+| 삼성전자 | 🏢 Organization | `[0, 4)` |
+| 이재용 | 👤 Person | `[5, 8)` |
+| 서울 | 📍 Location | `[13, 15)` |
+
+The applications load models lazily and bind to localhost. The KoELECTRA view escapes user HTML; the KF-DeBERTa view reports missing checkpoints and preserves spaces inside continuous multiword entities.
+
+To use the checkpoint from a fresh training run in PowerShell:
+
+```powershell
+$env:KOREAN_NER_DEBERTA_CHECKPOINT = Join-Path $env:TEMP 'korean_ner_deberta_extra_epoch/best_model.pt'
+python app_deberta.py
 ```
 
-Navigate to `http://localhost:7860` to test custom Korean text.
-
-Example output for "삼성전자 이재용 회장이 서울에서 기자회견을 열었다":
-
-| Entity | Type | Color |
-|--------|------|-------|
-| 삼성전자 | 🏢 Organization | Blue |
-| 이재용 | 👤 Person | Red |
-| 서울 | 📍 Location | Teal |
+`KOREAN_NER_DEVICE=cuda` explicitly enables GPU inference. For the KoELECTRA demo, use `KOREAN_NER_CHECKPOINT` to select compatible corrected weights.
 
 ---
 
@@ -415,68 +437,120 @@ Example output for "삼성전자 이재용 회장이 서울에서 기자회견�
 
 ### Requirements
 
-- Python 3.11+
-- CUDA-capable GPU (recommended) or CPU
-- 4GB+ VRAM for inference, 4GB+ for training with mixed precision
+- Python 3.11+ in an isolated environment
+- CPU for tests and inference; a compatible CUDA GPU for the documented full training run
+- Several gigabytes of free disk space for pretrained weights, checkpoints, and optimizer state
 
 ### Setup
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/korean_ner.git
+**Windows (PowerShell)**:
+
+```powershell
+git clone https://github.com/Ezzzzz4/korean_ner.git
 cd korean_ner
-
-# Create virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# or: venv\Scripts\activate  # Windows
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Download model weights
-pip install huggingface_hub
-huggingface-cli download mrleast/koelectra_ner --local-dir weights/
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
+
+**Linux / macOS**:
+
+```bash
+git clone https://github.com/Ezzzzz4/korean_ner.git
+cd korean_ner
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+If PowerShell blocks activation, use `.\.venv\Scripts\python.exe` in place of `python` for installation and all project commands. The commands below assume the environment is activated.
+
+The verified Windows GPU environment used **PyTorch 2.12.1 + CUDA 13.0**. For that environment, install the matching wheel before the remaining dependencies:
+
+```bash
+python -m pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cu130
+python -m pip install -r requirements.txt
+```
+
+The existing local `.venv` was provisioned with `uv` and has no `pip` module. Use `uv pip install --python .venv/Scripts/python.exe -r requirements.txt` and `uv pip check --python .venv/Scripts/python.exe` when maintaining that environment. A fresh standard-library venv uses the commands above.
+
+Model weights require a separate training or download step; see [Model Weights](#model-weights).
 
 ---
 
 ## Usage
 
+Run commands from the repository root with the environment activated.
+
 ### Running the Demo
 
 ```bash
-python app.py
+python app_deberta.py
+python predict_deberta.py "삼성전자 이재용 회장이 서울에서 회의를 열었다." --checkpoint runs/kf_deberta_best.pt
 ```
 
 ### Evaluation
 
 ```bash
-cd evaluate
-python evaluate.py
+# Selected KF-DeBERTa: full public validation, CPU by default
+python evaluate_deberta.py --checkpoint runs/kf_deberta_best.pt --output runs/recheck/metrics.json
+
+# Corrected KoELECTRA: benchmark-compatible and all-character diagnostics
+python evaluate/evaluate.py --checkpoint runs/corrected_seed42/averaged_e1_e2_e3.pt --split validation --output-dir runs/koelectra_recheck
+
+# Rebuild the README chart from committed reports; no model needed
+python evaluate/report_results.py
 ```
 
-Generates classification reports, confusion matrices, and per-entity visualizations.
+The KF-DeBERTa report records split, example count, checkpoint SHA-256, and F1. A training diagnostic uses `--split train --limit 5000`; this selects a reproducible sample with seed 42. Use `--device cuda` explicitly for GPU evaluation.
 
 ### Training
 
-The training notebook (`train_model.ipynb`) includes:
-- KLUE NER dataset loading and preprocessing
-- Model architecture definition with CRF
-- FGM adversarial training implementation
-- R-Drop consistency regularization
-- Mixed precision training with gradient scaling
-- Checkpoint saving and early stopping
+The maintained training entry points replace duplicated notebook code. `train_model.ipynb` is a runbook for the corrected KoELECTRA path; KF-DeBERTa uses `train_deberta.py`.
+
+```powershell
+# Bounded CPU check; even a short run saves full model weights
+$smokeDir = Join-Path $env:TEMP 'korean_ner_deberta_smoke'
+python train_deberta.py --device cpu --train-limit 16 --eval-limit 16 --epochs 1 --output-dir $smokeDir
+```
+
+The full experiment writes multi-gigabyte optimizer checkpoints. For this Windows checkout, use the system temporary directory on the drive with free space; allow at least **10 GB** for both stages and atomic checkpoint replacements. Select another destination if needed.
+
+```powershell
+$runDir = Join-Path $env:TEMP 'korean_ner_deberta_seed42'
+$extraDir = Join-Path $env:TEMP 'korean_ner_deberta_extra_epoch'
+
+# Full initial KF-DeBERTa run (explicit GPU)
+python train_deberta.py --device cuda --bf16 --epochs 5 --lr 3e-5 --seed 42 --output-dir $runDir
+
+# Optional one-epoch continuation with a fresh optimizer and lower LR
+python train_deberta.py --device cuda --bf16 --epochs 1 --lr 5e-6 --warmup-ratio 0 --seed 42 --init-checkpoint (Join-Path $runDir 'best_model.pt') --output-dir $extraDir
+
+# Compare the saved candidates before choosing a demo checkpoint
+python evaluate_deberta.py --checkpoint (Join-Path $runDir 'best_model.pt') --output (Join-Path $runDir 'recheck.json')
+python evaluate_deberta.py --checkpoint (Join-Path $extraDir 'best_model.pt') --output (Join-Path $extraDir 'recheck.json')
+```
+
+Use a new output directory with enough free space. `--init-checkpoint` starts a new training stage from weights. `--resume-checkpoint` restores an interrupted run's optimizer and schedule and rejects changes to its learning rate or epoch count. A repeat run may select a different best epoch or score; improvement from an extra epoch is not guaranteed.
 
 ### Analysis Tools
 
+These tools operate on the **KoELECTRA architecture**; the KF-DeBERTa checkpoint is not interchangeable:
+
 ```bash
-cd evaluate
-python error_analysis.py   # Error categorization
-python attention_viz.py    # Attention heatmaps
-python benchmark.py        # GPU/CPU speed test
-python calibration.py      # Confidence analysis
+python evaluate/error_analysis.py --model-path runs/corrected_seed42/averaged_e1_e2_e3.pt
+python evaluate/attention_viz.py --model-path runs/corrected_seed42/averaged_e1_e2_e3.pt
+python evaluate/benchmark.py --model-path runs/corrected_seed42/averaged_e1_e2_e3.pt
+python evaluate/calibration.py --model-path runs/corrected_seed42/averaged_e1_e2_e3.pt
 ```
+
+### Verification
+
+```bash
+python -m unittest discover -s tests -q
+```
+
+The corrected code passed **78 CPU tests**, including label alignment, scoring, checkpoint loading, HTML escaping, and multiword entity offsets. CLI and demo inference were also checked with the selected checkpoint.
 
 ---
 
@@ -484,38 +558,40 @@ python calibration.py      # Confidence analysis
 
 | Category | Technology |
 |----------|------------|
-| **Framework** | PyTorch 2.0+, Transformers |
-| **Encoder** | KoELECTRA-base-v3 (monologg) |
-| **Structured Prediction** | pytorch-crf |
-| **Evaluation** | seqeval |
+| **Framework** | PyTorch 2.12.1, Transformers 4.35.0 |
+| **Encoders** | KoELECTRA-base-v3; KF-DeBERTa-base |
+| **Structured Prediction** | pytorch-crf in the KoELECTRA model |
+| **Evaluation** | seqeval strict IOB2 entity macro F1 |
+| **Data** | KLUE NER through Hugging Face Datasets |
 | **Demo** | Gradio |
 | **Visualization** | Matplotlib, Seaborn |
+
+Exact package pins are listed in [requirements.txt](requirements.txt).
 
 ---
 
 ## Ablation Study
 
-A comprehensive ablation study framework is ready to quantify individual technique contributions:
+The maintained runner compares **four regularization variants at the same KoELECTRA + BiLSTM + CRF architecture**:
 
-```bash
-cd ablation
-python train.py                     # Run all 6 experiments
-python train.py --experiment full   # Run specific experiment
-python train.py --status            # Check progress
-python train.py --report            # Generate comparison report
+```powershell
+$ablationDir = Join-Path $env:TEMP 'korean_ner_ablation'
+python ablation/train.py --output-dir $ablationDir --dry-run
+python ablation/train.py --output-dir $ablationDir --variant fgm --device cpu --train-limit 16 --eval-limit 16 --epochs 1
+python ablation/train.py --output-dir $ablationDir --status
+python ablation/train.py --output-dir $ablationDir --report
 ```
 
 **Experiments**:
+
 | Name | BiLSTM | CRF | FGM | R-Drop |
 |------|--------|-----|-----|--------|
-| baseline | ✗ | ✗ | ✗ | ✗ |
-| +crf | ✗ | ✓ | ✗ | ✗ |
-| +bilstm | ✓ | ✗ | ✗ | ✗ |
-| full_no_fgm | ✓ | ✓ | ✗ | ✓ |
-| full_no_rdrop | ✓ | ✓ | ✓ | ✗ |
-| full | ✓ | ✓ | ✓ | ✓ |
+| base | ✓ | ✓ | ✗ | ✗ |
+| fgm | ✓ | ✓ | ✓ | ✗ |
+| rdrop | ✓ | ✓ | ✗ | ✓ |
+| fgm_rdrop | ✓ | ✓ | ✓ | ✓ |
 
-The script supports **resume from interruption**—checkpoints are saved after each epoch, and training automatically continues from the last completed epoch.
+This design measures regularization differences once matched runs are completed; it does not isolate BiLSTM or CRF gains. The historical architecture-ablation claims and estimated percentage improvements remain unverified. Results should be reported only after completed runs with the same protocol and multiple seeds.
 
 ---
 
@@ -523,39 +599,48 @@ The script supports **resume from interruption**—checkpoints are saved after e
 
 ### Technical Lessons
 
-1. **Verify preprocessing assumptions early**: The tokenization mismatch cost significant debugging time. Always inspect raw dataset examples before building pipelines.
+1. **Verify preprocessing assumptions early**: Character labels, tokenizer pieces, spaces, and original-text offsets are different representations. Explicit mappings now connect training, evaluation, and inference.
 
-2. **Label mappings are subtle but critical**: A simple ordering difference caused complete prediction failure. Load label lists programmatically from dataset metadata.
+2. **Label mappings are subtle but critical**: Read label names from dataset metadata, preserve them in checkpoints, and reject incompatible weights.
 
-3. **Structured prediction enforces coherence**: CRFs eliminate invalid tag sequences through transition modeling. The full contribution will be quantified through the planned ablation study.
+3. **Name the metric and split**: Subtoken micro F1, character-reconstructed entity macro F1, and all-character diagnostics answer different questions. A public-validation result cannot establish a hidden-test result.
 
-4. **Modern regularization techniques are promising**: FGM and R-Drop are implemented based on their strong theoretical motivation. The ablation study will measure their individual contributions empirically.
+4. **Treat graphs as measurements**: Confusion matrices, attention maps, and calibration curves need their own definitions. Their visual patterns do not establish the cause of an error.
 
 ### Research Insights
 
-**1. The Importance of Structured Prediction**  
-Independent token classification permits invalid sequences. CRFs enforce global coherence by modeling transition probabilities, providing consistent (if modest) improvements on sequence labeling.
+**1. The Measured Improvement**
 
-**2. Adversarial Training as Data Augmentation**  
-FGM provides an efficient form of data augmentation—perturbing embeddings creates "synthetic" examples without additional annotation. This is particularly valuable when training data is limited.
+The selected KF-DeBERTa model achieved **86.74% validation entity macro F1**, compared with **85.46%** for the corrected KoELECTRA average. This is a model-level comparison; encoder, tokenization, and head all changed.
 
-**3. Consistency Regularization for Robustness**  
-R-Drop's KL penalty encourages predictions to remain stable across dropout masks. This reduces overfitting to specific neuron configurations, improving generalization.
+**2. An Extra Epoch Can Help Without Settling Generalization**
 
-**4. Engineering Matters as Much as Architecture**  
-The tokenization and label mapping bugs demonstrate that correctness is as important as sophistication. Systematic validation of preprocessing assumptions prevents subtle failures that undermine model performance.
+One lower-rate epoch improved validation by **0.24 percentage points**. The train–validation gap remained substantial at **8.45 points**, so I stopped training and retained the earlier checkpoint. More epochs alone are not evidence of a better model.
+
+**3. A Promising Technique Still Needs an Experiment**
+
+FGM, R-Drop, and structured prediction have motivations worth testing. This repository does not yet provide matched, multi-seed evidence assigning a specific gain to any of them. Even weight averaging performed below the selected checkpoint in the latest comparison.
+
+**4. Engineering Makes the Result Interpretable**
+
+The most useful corrections connected each reported score to a data split, decoding rule, saved checkpoint, and reproducible command. The remaining research question is performance on an untouched test set, followed by repeatability across seeds.
 
 ---
 
 ## References
 
 ### Dataset
+
+- [Official KLUE baseline implementation](https://github.com/KLUE-benchmark/KLUE-baseline), including NER character reconstruction and scoring.
 - Park, S., et al. (2021). [KLUE: Korean Language Understanding Evaluation](https://arxiv.org/abs/2105.09680). *NeurIPS Datasets and Benchmarks Track*.
 
 ### Model
+
+- KakaoBank & FnGuide. [KF-DeBERTa-base](https://huggingface.co/kakaobank/kf-deberta-base). Public pretrained encoder and model card.
 - Park, J. (2020). [KoELECTRA: Pretrained ELECTRA Model for Korean](https://github.com/monologg/KoELECTRA). GitHub Repository.
 
 ### Techniques
+
 - Clark, K., et al. (2020). [ELECTRA: Pre-training Text Encoders as Discriminators Rather Than Generators](https://arxiv.org/abs/2003.10555). *ICLR*.
 - Lample, G., et al. (2016). [Neural Architectures for Named Entity Recognition](https://arxiv.org/abs/1603.01360). *NAACL*. (BiLSTM-CRF architecture)
 - Miyato, T., et al. (2017). [Adversarial Training Methods for Semi-Supervised Text Classification](https://arxiv.org/abs/1605.07725). *ICLR*. (FGM inspiration)
@@ -571,4 +656,4 @@ The tokenization and label mapping bugs demonstrate that correctness is as impor
 
 *This project was developed as part of my graduate school application portfolio, demonstrating end-to-end NLP pipeline development from problem formulation through deployment and analysis.*
 
-*Last updated: January 2026*
+*Last updated: September 2026*

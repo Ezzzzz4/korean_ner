@@ -28,12 +28,9 @@ env/
 # PyTorch
 *.pt
 *.pth
-!weights/best_model.pt
 
 # Data
 *.csv
-*.json
-!assets/metrics.json
 
 # OS
 .DS_Store
@@ -51,6 +48,10 @@ for_sending/
 
 #weights
 weights/
+.omx/
+# Raw experiments stay local; portable evidence is kept in reports/.
+/runs/
+/ablation/runs/
 
 #ablation
 ablation/checkpoints/

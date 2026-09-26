@@ -1,31 +1,23 @@
-"""
-Error Analysis Script for Korean NER
-Analyzes model errors: boundary errors, type confusion, and failure patterns.
-"""
+"""Error analysis script for Korean NER."""
 
-import torch
-import torch.nn as nn
-from transformers import AutoTokenizer, AutoModel
-from torchcrf import CRF
-from datasets import load_dataset
+from __future__ import annotations
+
+import argparse
 from collections import defaultdict
 import json
-import os
+import sys
+from pathlib import Path
+from typing import Iterable, Sequence
 
-# ============================================================================
-# Configuration
-# ============================================================================
-MODEL_PATH = "../weights/best_model.pt"
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+MODEL_PATH = REPO_ROOT / "weights" / "best_model.pt"
 MODEL_NAME = "monologg/koelectra-base-v3-discriminator"
-MAX_LENGTH = 128
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-OUTPUT_DIR = "../assets"
-
-# KLUE NER Labels (correct order)
-LABEL_LIST = ['B-DT', 'I-DT', 'B-LC', 'I-LC', 'B-OG', 'I-OG', 'B-PS', 'I-PS', 'B-QT', 'I-QT', 'B-TI', 'I-TI', 'O']
-ID_TO_LABEL = {i: l for i, l in enumerate(LABEL_LIST)}
-LABEL_TO_ID = {l: i for i, l in enumerate(LABEL_LIST)}
-NUM_LABELS = len(LABEL_LIST)
+MAX_LENGTH = 192
+OUTPUT_DIR = REPO_ROOT / "runs" / "error_analysis"
 
 ENTITY_NAMES = {
     'PS': 'Person',
@@ -37,148 +29,55 @@ ENTITY_NAMES = {
 }
 
 
-# ============================================================================
-# Model Definition
-# ============================================================================
-class KoElectraNER(nn.Module):
-    def __init__(self, model_name, num_labels, num_samples=5):
-        super().__init__()
-        self.num_labels = num_labels
-        self.num_samples = num_samples
-        
-        self.electra = AutoModel.from_pretrained(model_name)
-        hidden = self.electra.config.hidden_size
-        
-        self.lstm = nn.LSTM(hidden, 256, num_layers=1, batch_first=True, bidirectional=True)
-        self.dropout = nn.Dropout(0.1)
-        self.classifier = nn.Linear(512, num_labels)
-        self.crf = CRF(num_labels, batch_first=True)
-    
-    def forward(self, input_ids, attention_mask, labels=None):
-        enc = self.electra(input_ids=input_ids, attention_mask=attention_mask)
-        seq_out = enc.last_hidden_state
-        lstm_out, _ = self.lstm(seq_out)
-        emissions = self.classifier(self.dropout(lstm_out))
-        mask = attention_mask.bool()
-        
-        if labels is not None:
-            labels_crf = labels.clone()
-            labels_crf[labels_crf == -100] = 0
-            loss = -self.crf(emissions, labels_crf, mask=mask, reduction='mean')
-            return loss, emissions
-        return self.crf.decode(emissions, mask=mask)
+def entity_to_dict(entity: object) -> dict:
+    """Return the script's historical entity dict shape."""
+    if isinstance(entity, dict):
+        return entity
+    return {
+        'text': entity.text,
+        'type': entity.label,
+        'start': entity.start,
+        'end': entity.end,
+    }
 
 
-def extract_entities(chars, labels):
-    """Extract entity spans from character-level labels."""
-    entities = []
-    current_type = None
-    current_chars = []
-    start_idx = 0
-    
-    for idx, (char, label) in enumerate(zip(chars, labels)):
-        if label.startswith('B-'):
-            if current_type and current_chars:
-                entities.append({
-                    'text': ''.join(current_chars),
-                    'type': current_type,
-                    'start': start_idx,
-                    'end': idx
-                })
-            current_type = label[2:]
-            current_chars = [char]
-            start_idx = idx
-        elif label.startswith('I-'):
-            etype = label[2:]
-            if current_type == etype:
-                current_chars.append(char)
-            else:
-                if current_type and current_chars:
-                    entities.append({
-                        'text': ''.join(current_chars),
-                        'type': current_type,
-                        'start': start_idx,
-                        'end': idx
-                    })
-                current_type = etype
-                current_chars = [char]
-                start_idx = idx
-        else:
-            if current_type and current_chars:
-                entities.append({
-                    'text': ''.join(current_chars),
-                    'type': current_type,
-                    'start': start_idx,
-                    'end': idx
-                })
-            current_type = None
-            current_chars = []
-    
-    if current_type and current_chars:
-        entities.append({
-            'text': ''.join(current_chars),
-            'type': current_type,
-            'start': start_idx,
-            'end': len(chars)
-        })
-    
-    return entities
+def entities_to_dicts(entities: Iterable[object]) -> list[dict]:
+    return [entity_to_dict(entity) for entity in entities]
+
+
+def spans_overlap(left, right):
+    """Return True when half-open character spans share at least one char."""
+    return max(left['start'], right['start']) < min(left['end'], right['end'])
+
+
+def overlap_size(left, right):
+    """Return the number of shared characters between half-open spans."""
+    return max(0, min(left['end'], right['end']) - max(left['start'], right['start']))
+
+
+def same_boundary(left, right):
+    """Return True when two entity spans have identical character boundaries."""
+    return left['start'] == right['start'] and left['end'] == right['end']
 
 
 def analyze_errors(true_entities, pred_entities, text):
     """Categorize errors between true and predicted entities."""
     errors = []
-    
-    # Create lookup by position
-    true_by_pos = {(e['start'], e['end']): e for e in true_entities}
-    pred_by_pos = {(e['start'], e['end']): e for e in pred_entities}
-    
-    # Find missed entities (false negatives)
-    for pos, true_ent in true_by_pos.items():
-        if pos not in pred_by_pos:
-            # Check for partial matches
-            partial = None
-            for pred_pos, pred_ent in pred_by_pos.items():
-                if (pred_pos[0] <= pos[0] < pred_pos[1]) or (pred_pos[0] < pos[1] <= pred_pos[1]):
-                    partial = pred_ent
-                    break
-            
-            if partial:
-                errors.append({
-                    'type': 'boundary_error',
-                    'true_entity': true_ent,
-                    'pred_entity': partial,
-                    'text': text
-                })
-            else:
-                errors.append({
-                    'type': 'missed_entity',
-                    'true_entity': true_ent,
-                    'text': text
-                })
-    
-    # Find spurious entities (false positives)
-    for pos, pred_ent in pred_by_pos.items():
-        if pos not in true_by_pos:
-            # Check if it overlaps with any true entity
-            overlaps = False
-            for true_pos in true_by_pos:
-                if (true_pos[0] <= pos[0] < true_pos[1]) or (true_pos[0] < pos[1] <= true_pos[1]):
-                    overlaps = True
-                    break
-            
-            if not overlaps:
-                errors.append({
-                    'type': 'spurious_entity',
-                    'pred_entity': pred_ent,
-                    'text': text
-                })
-    
-    # Find type confusions (correct boundary, wrong type)
-    for pos in true_by_pos:
-        if pos in pred_by_pos:
-            true_ent = true_by_pos[pos]
-            pred_ent = pred_by_pos[pos]
+    true_entities = entities_to_dicts(true_entities)
+    pred_entities = entities_to_dicts(pred_entities)
+
+    matched_true = set()
+    matched_pred = set()
+
+    # Exact boundaries are decided before partial overlaps so wrong labels are
+    # counted as type confusions instead of boundary errors.
+    for true_idx, true_ent in enumerate(true_entities):
+        for pred_idx, pred_ent in enumerate(pred_entities):
+            if pred_idx in matched_pred or not same_boundary(true_ent, pred_ent):
+                continue
+
+            matched_true.add(true_idx)
+            matched_pred.add(pred_idx)
             if true_ent['type'] != pred_ent['type']:
                 errors.append({
                     'type': 'type_confusion',
@@ -186,33 +85,94 @@ def analyze_errors(true_entities, pred_entities, text):
                     'pred_entity': pred_ent,
                     'text': text
                 })
-    
+            break
+
+    overlap_pairs = []
+    for true_idx, true_ent in enumerate(true_entities):
+        if true_idx in matched_true:
+            continue
+        for pred_idx, pred_ent in enumerate(pred_entities):
+            if pred_idx in matched_pred:
+                continue
+            overlap = overlap_size(true_ent, pred_ent)
+            if overlap > 0:
+                overlap_pairs.append((overlap, true_idx, pred_idx))
+
+    for _, true_idx, pred_idx in sorted(overlap_pairs, key=lambda item: (-item[0], item[1], item[2])):
+        if true_idx in matched_true or pred_idx in matched_pred:
+            continue
+        matched_true.add(true_idx)
+        matched_pred.add(pred_idx)
+        errors.append({
+            'type': 'boundary_error',
+            'true_entity': true_entities[true_idx],
+            'pred_entity': pred_entities[pred_idx],
+            'text': text
+        })
+
+    for true_idx, true_ent in enumerate(true_entities):
+        if true_idx not in matched_true:
+            errors.append({
+                'type': 'missed_entity',
+                'true_entity': true_ent,
+                'text': text
+            })
+
+    for pred_idx, pred_ent in enumerate(pred_entities):
+        if pred_idx not in matched_pred:
+            errors.append({
+                'type': 'spurious_entity',
+                'pred_entity': pred_ent,
+                'text': text
+            })
+
     return errors
 
 
-def main():
+def parse_args(argv: Sequence[str] | None = None):
+    parser = argparse.ArgumentParser(description="Analyze Korean NER model errors on KLUE validation data.")
+    parser.add_argument("--model-path", default=MODEL_PATH, help="Path to a raw or wrapped model checkpoint.")
+    parser.add_argument("--model-name", default=MODEL_NAME, help="Hugging Face model name or path.")
+    parser.add_argument("--max-length", type=int, default=MAX_LENGTH, help="Aligned token sequence length.")
+    parser.add_argument("--device", default="cpu", help="Torch device to use. Defaults to explicit CPU.")
+    parser.add_argument("--limit", type=int, default=None, help="Optional number of validation samples to analyze.")
+    parser.add_argument("--output-dir", default=OUTPUT_DIR, help="Directory for error_analysis reports.")
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None):
+    import torch
+    from datasets import load_dataset
+    from transformers import AutoTokenizer
+
+    from korean_ner.alignment import align_text
+    from korean_ner.checkpoint import load_model_state
+    from korean_ner.decode import extract_bio_spans, token_predictions_to_char_labels
+    from korean_ner.labels import build_label_maps, labels_from_klue_dataset, to_label_names
+    from korean_ner.model import KoElectraNER
+
+    args = parse_args(argv)
+    device = torch.device(args.device)
+
     print("=" * 60)
     print("Korean NER Error Analysis")
     print("=" * 60)
     
     # Load model
     print("\nLoading model...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = KoElectraNER(MODEL_NAME, NUM_LABELS)
-    
-    checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
-    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    else:
-        model.load_state_dict(checkpoint)
-    
-    model.to(DEVICE)
-    model.eval()
-    
-    # Load validation data
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+
     print("Loading KLUE NER validation set...")
     dataset = load_dataset('klue', 'ner')
+    label_maps = build_label_maps(labels_from_klue_dataset(dataset))
+    model = KoElectraNER(args.model_name, len(label_maps.names))
+    load_model_state(model, args.model_path, map_location=device)
+    model.to(device)
+    model.eval()
+
     val_data = dataset['validation']
+    if args.limit is not None:
+        val_data = val_data.select(range(min(args.limit, len(val_data))))
     
     # Collect all errors
     all_errors = []
@@ -225,37 +185,35 @@ def main():
         if idx % 500 == 0:
             print(f"  Processing {idx}/{len(val_data)}...")
         
-        chars = example['tokens']
-        true_labels = [ID_TO_LABEL[t] for t in example['ner_tags']]
-        text = ''.join(chars)
+        text = ''.join(example['tokens'])
+        true_labels = to_label_names(example['ner_tags'], label_maps.id_to_label)
         
         # Get predictions
-        inputs = tokenizer(
-            chars,
-            is_split_into_words=True,
-            return_tensors="pt",
-            truncation=True,
-            max_length=MAX_LENGTH,
-            padding=True
+        encoding = align_text(
+            text,
+            tokenizer,
+            max_length=args.max_length,
+            label_to_id=label_maps.label_to_id,
+            id_to_label=label_maps.id_to_label,
         )
-        
-        input_ids = inputs['input_ids'].to(DEVICE)
-        attention_mask = inputs['attention_mask'].to(DEVICE)
-        word_ids = inputs.word_ids(batch_index=0)
+
+        input_ids = torch.tensor([encoding.input_ids], dtype=torch.long, device=device)
+        attention_mask = torch.tensor([encoding.attention_mask], dtype=torch.long, device=device)
         
         with torch.no_grad():
             predictions = model(input_ids, attention_mask)[0]
         
         # Map predictions to characters
-        pred_labels = ['O'] * len(chars)
-        for tok_idx, (pred_id, word_idx) in enumerate(zip(predictions, word_ids)):
-            if word_idx is not None and word_idx < len(chars):
-                if pred_labels[word_idx] == 'O':  # First subword only
-                    pred_labels[word_idx] = ID_TO_LABEL[pred_id]
+        pred_labels = token_predictions_to_char_labels(
+            predictions,
+            encoding.char_indices,
+            label_maps.id_to_label,
+            text_length=len(text),
+        )
         
         # Extract entities
-        true_entities = extract_entities(chars, true_labels)
-        pred_entities = extract_entities(chars, pred_labels)
+        true_entities = extract_bio_spans(text, true_labels)
+        pred_entities = extract_bio_spans(text, pred_labels)
         
         # Analyze errors
         errors = analyze_errors(true_entities, pred_entities, text)
@@ -283,7 +241,7 @@ def main():
     
     print("\n## Type Confusion Matrix")
     print("-" * 40)
-    entity_types = ['PS', 'LC', 'OG', 'DT', 'TI', 'QT']
+    entity_types = sorted({label.split('-', 1)[1] for label in label_maps.names if '-' in label})
     print("True\\Pred |", " | ".join(f"{t:>4s}" for t in entity_types))
     print("-" * 50)
     for true_type in entity_types:
@@ -308,7 +266,8 @@ def main():
                     print(f"  Pred: '{pe['text']}' ({ENTITY_NAMES.get(pe['type'], pe['type'])})")
     
     # Save detailed report
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     
     report = {
         'total_errors': total_errors,
@@ -317,11 +276,11 @@ def main():
         'sample_errors': all_errors[:100]  # Save first 100 for reference
     }
     
-    with open(f"{OUTPUT_DIR}/error_analysis.json", 'w', encoding='utf-8') as f:
+    with (output_dir / "error_analysis.json").open('w', encoding='utf-8') as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     
     # Save text report
-    with open(f"{OUTPUT_DIR}/error_analysis.txt", 'w', encoding='utf-8') as f:
+    with (output_dir / "error_analysis.txt").open('w', encoding='utf-8') as f:
         f.write("Korean NER Error Analysis Report\n")
         f.write("=" * 60 + "\n\n")
         
@@ -332,7 +291,7 @@ def main():
         
         f.write(f"\nTotal Errors: {total_errors}\n")
     
-    print(f"\n\nReports saved to {OUTPUT_DIR}/")
+    print(f"\n\nReports saved to {output_dir}/")
     print("  - error_analysis.json")
     print("  - error_analysis.txt")
 
